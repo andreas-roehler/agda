@@ -57,24 +57,6 @@ If the face does not exist, then it is created first."
                       :font           'unspecified)
   (eval `(set-face-attribute face nil ,@attrs)))
 
-(defvar agda2-highlight-face-attributes-list
-  '(:family :width :height :weight :slant :foreground :background
-            :inverse-video :stipple :underline :overline :strike-through
-            :inherit :box :font)
-  "The attributes considered by `agda2-highlight-face-attributes'.")
-
-(defun agda2-highlight-face-attributes (face)
-  "The names and values of all attributes in FACE.
-Only the attributes in `agda2-highlight-face-attributes-list' are
-considered. The attributes are returned in a flat list of the
-form (name1 value1 name2 value2...)."
-  (apply 'append
-         (mapcar (lambda (attr)
-                   (let ((val (face-attribute face attr)))
-                     (if (member val '(unspecified nil)) '()
-                       (list attr (if (symbolp val) `',val val)))))
-                 agda2-highlight-face-attributes-list)))
-
 (defun agda2-highlight-set-faces (variable group)
   "Set all Agda faces according to the value of GROUP.
 Also sets the default value of VARIABLE to GROUP."
@@ -142,71 +124,49 @@ Also sets the default value of VARIABLE to GROUP."
              :background "light blue")))
          ((equal group 'default-faces)
           (list (cons 'agda2-highlight-keyword-face
-                      (agda2-highlight-face-attributes
-                       font-lock-keyword-face))
+                      (list :inherit font-lock-keyword-face))
                 (cons 'agda2-highlight-string-face
-                      (agda2-highlight-face-attributes
-                       font-lock-string-face))
+                      (list :inherit font-lock-string-face))
                 (cons 'agda2-highlight-number-face
-                      (agda2-highlight-face-attributes
-                       font-lock-constant-face))
+                      (list :inherit font-lock-constant-face))
                 (cons 'agda2-highlight-symbol-face
-                      (agda2-highlight-face-attributes
-                       font-lock-keyword-face))
+                      (list :inherit font-lock-keyword-face))
                 (cons 'agda2-highlight-primitive-type-face
-                      (agda2-highlight-face-attributes
-                       font-lock-keyword-face))
+                      (list :inherit font-lock-keyword-face))
                 (cons 'agda2-highlight-bound-variable-face
-                      (agda2-highlight-face-attributes
-                       font-lock-variable-name-face))
+                      (list :inherit font-lock-variable-name-face))
                 (cons 'agda2-highlight-generalizable-variable-face
-                      (agda2-highlight-face-attributes
-                       font-lock-variable-name-face))
+                      (list :inherit font-lock-variable-name-face))
                 (cons 'agda2-highlight-inductive-constructor-face
-                      (agda2-highlight-face-attributes
-                       font-lock-type-face))
+                      (list :inherit font-lock-type-face))
                 (cons 'agda2-highlight-coinductive-constructor-face
-                      (agda2-highlight-face-attributes
-                       font-lock-type-face))
+                      (list :inherit font-lock-type-face))
                 (cons 'agda2-highlight-datatype-face
-                      (agda2-highlight-face-attributes
-                       font-lock-type-face))
+                      (list :inherit font-lock-type-face))
                 (cons 'agda2-highlight-field-face
-                      (agda2-highlight-face-attributes
-                       font-lock-variable-name-face))
+                      (list :inherit font-lock-variable-name-face))
                 (cons 'agda2-highlight-function-face
-                      (agda2-highlight-face-attributes
-                       font-lock-function-name-face))
+                      (list :inherit font-lock-function-name-face))
                 (cons 'agda2-highlight-module-face
-                      (agda2-highlight-face-attributes
-                       font-lock-type-face))
+                      (list :inherit font-lock-type-face))
                 (cons 'agda2-highlight-postulate-face
-                      (agda2-highlight-face-attributes
-                       font-lock-type-face))
+                      (list :inherit font-lock-type-face))
                 (cons 'agda2-highlight-primitive-face
-                      (agda2-highlight-face-attributes
-                       font-lock-constant-face))
+                      (list :inherit font-lock-constant-face))
                 (cons 'agda2-highlight-macro-face
-                      (agda2-highlight-face-attributes
-                       font-lock-function-name-face))
+                      (list :inherit font-lock-function-name-face))
                 (cons 'agda2-highlight-record-face
-                      (agda2-highlight-face-attributes
-                       font-lock-variable-name-face))
+                      (list :inherit font-lock-variable-name-face))
                 (cons 'agda2-highlight-dotted-face
-                      (agda2-highlight-face-attributes
-                       font-lock-variable-name-face))
+                      (list :inherit font-lock-variable-name-face))
                 (cons 'agda2-highlight-operator-face
-                      (agda2-highlight-face-attributes
-                       font-lock-function-name-face))
+                      (list :inherit font-lock-function-name-face))
                 (cons 'agda2-highlight-error-face
-                      (agda2-highlight-face-attributes
-                       font-lock-warning-face))
+                      (list :inherit font-lock-warning-face))
                 (cons 'agda2-highlight-typechecks-face
-                      (agda2-highlight-face-attributes
-                       font-lock-type-face))
+                      (list :inherit font-lock-type-face))
                 (cons 'agda2-highlight-typechecking-face
-                      (agda2-highlight-face-attributes
-                       font-lock-preprocessor-face)))))))
+                      (list :inherit font-lock-preprocessor-face)))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Faces
@@ -233,26 +193,17 @@ If `agda2-highlight-face-groups' is nil."
   :group 'agda2-highlight)
 
 (defface agda2-highlight-keyword-face
-  '((((background light))
-     (:foreground "DarkOrange3"))
-    (((background dark))
-     (:foreground "#FF9932")))
+  '((t (:foreground "DarkOrange3")))
   "The face used for keywords."
   :group 'agda2-highlight-faces)
 
 (defface agda2-highlight-string-face
-  '((((background light))
-     (:foreground "firebrick"))
-    (((background dark))
-     (:foreground "#DD4D4D")))
+  '((t (:foreground "firebrick")))
   "The face used for strings."
   :group 'agda2-highlight-faces)
 
 (defface agda2-highlight-number-face
-  '((((background light))
-     (:foreground "purple"))
-    (((background dark))
-     (:foreground "#9010E0")))
+  '((t (:foreground "purple")))
   "The face used for numbers."
   :group 'agda2-highlight-faces)
 
@@ -265,10 +216,7 @@ If `agda2-highlight-face-groups' is nil."
   :group 'agda2-highlight-faces)
 
 (defface agda2-highlight-primitive-type-face
-  '((((background light))
-     (:foreground "medium blue"))
-    (((background dark))
-     (:foreground "#8080FF")))
+  '((t (:foreground "medium blue")))
   "The face used for primitive types (like Set and Prop)."
   :group 'agda2-highlight-faces)
 
@@ -283,58 +231,37 @@ If `agda2-highlight-face-groups' is nil."
   :group 'agda2-highlight-faces)
 
 (defface agda2-highlight-inductive-constructor-face
-  '((((background light))
-     :foreground "green4")
-    (((background dark))
-     :foreground "#29CC29"))
+  '((t (:foreground "green4")))
   "The face used for inductive constructors."
   :group 'agda2-highlight-faces)
 
 (defface agda2-highlight-coinductive-constructor-face
-  '((((background light))
-     :foreground "gold4")
-    (((background dark))
-     :foreground "#FFEA75"))
+  '((t (:foreground "gold4")))
   "The face used for coinductive constructors."
   :group 'agda2-highlight-faces)
 
 (defface agda2-highlight-datatype-face
-  '((((background light))
-     (:foreground "medium blue"))
-    (((background dark))
-     (:foreground "#8080FF")))
+  '((t (:foreground "medium blue")))
   "The face used for datatypes."
   :group 'agda2-highlight-faces)
 
 (defface agda2-highlight-field-face
-  '((((background light))
-     (:foreground "DeepPink2"))
-    (((background dark))
-     (:foreground "#F570B7")))
+  '((t (:foreground "DeepPink2")))
   "The face used for record fields."
   :group 'agda2-highlight-faces)
 
 (defface agda2-highlight-function-face
-  '((((background light))
-     (:foreground "medium blue"))
-    (((background dark))
-     (:foreground "#8080FF")))
+  '((t (:foreground "medium blue")))
   "The face used for functions."
   :group 'agda2-highlight-faces)
 
 (defface agda2-highlight-module-face
-  '((((background light))
-     (:foreground "purple"))
-    (((background dark))
-     (:foreground "#CD80FF")))
+  '((t (:foreground "purple")))
   "The face used for module names."
   :group 'agda2-highlight-faces)
 
 (defface agda2-highlight-postulate-face
-  '((((background light))
-     (:foreground "medium blue"))
-    (((background dark))
-     (:foreground "#8080FF")))
+  '((t (:foreground "medium blue")))
   "The face used for postulates."
   :group 'agda2-highlight-faces)
 
@@ -344,26 +271,17 @@ If `agda2-highlight-face-groups' is nil."
   :group 'agda2-highlight-faces)
 
 (defface agda2-highlight-primitive-face
-  '((((background light))
-     (:foreground "medium blue"))
-    (((background dark))
-     (:foreground "#8080FF")))
+  '((t (:foreground "medium blue")))
   "The face used for primitive functions."
   :group 'agda2-highlight-faces)
 
 (defface agda2-highlight-macro-face
-  '((((background light))
-     (:foreground "aquamarine4"))
-    (((background dark))
-     (:foreground "#73BAA2")))
+  '((t (:foreground "aquamarine4")))
   "The face used for macros."
   :group 'agda2-highlight-faces)
 
 (defface agda2-highlight-record-face
-  '((((background light))
-     (:foreground "medium blue"))
-    (((background dark))
-     (:foreground "#8080FF")))
+  '((t (:foreground "medium blue")))
   "The face used for record types."
   :group 'agda2-highlight-faces)
 
@@ -378,98 +296,61 @@ If `agda2-highlight-face-groups' is nil."
   :group 'agda2-highlight-faces)
 
 (defface agda2-highlight-error-face
-  '((((background light))
-     (:foreground "red" :underline t))
-    (((background dark))
-     (:foreground "#FF0000" :underline t)))
+  '((t (:foreground "red" :underline t)))
   "The face used for errors."
   :group 'agda2-highlight-faces)
 
 (defface agda2-highlight-unsolved-meta-face
-  '((((background light))
-     (:background "yellow"))
-    (((background dark))
-     (:background "#806B00")))
+  '((t (:background "yellow")))
   "The face used for unsolved meta variables."
   :group 'agda2-highlight-faces)
 
 (defface agda2-highlight-unsolved-constraint-face
-  '((((background light))
-     (:background "yellow"))
-    (((background dark))
-     (:background "#806B00")))
+  '((t (:background "yellow")))
   "The face used for unsolved constraints which are not connected to metas."
   :group 'agda2-highlight-faces)
 
 (defface agda2-highlight-termination-problem-face
-  '((((background light))
-     (:background "light salmon"))
-    (((background dark))
-     (:background "#802400")))
+  '((t (:background "light salmon")))
   "The face used for termination problems."
   :group 'agda2-highlight-faces)
 
 (defface agda2-highlight-positivity-problem-face
-  '((((background light))
-     (:background "peru"))
-    (((background dark))
-     (:background "#803F00")))
+  '((t (:background "peru")))
   "The face used for positivity problems."
   :group 'agda2-highlight-faces)
 
 (defface agda2-highlight-deadcode-face
-  '((((background light))
-     (:background "dark gray"))
-    (((background dark))
-     (:background "#808080")))
+  '((t (:background "dark gray")))
   "The face used for dead code (unreachable clauses, etc.)."
   :group 'agda2-highlight-faces)
 
 (defface agda2-highlight-coverage-problem-face
-  '((((background light))
-     (:background "wheat"))
-    (((background dark))
-     (:background "#805300")))
+  '((t (:background "wheat")))
   "The face used for coverage problems."
   :group 'agda2-highlight-faces)
 
 (defface agda2-highlight-catchall-clause-face
-  '((((background light))
-     (:background "white smoke"))
-    (((background dark))
-     (:background "#404040")))
+  '((t (:background "white smoke")))
   "The face used for catchall clauses."
   :group 'agda2-highlight-faces)
 
 (defface agda2-highlight-confluence-problem-face
-  '((((background light))
-     (:background "pink"))
-    (((background dark))
-     (:background "#800080")))
+  '((t (:background "pink")))
   "The face used for confluence problems."
   :group 'agda2-highlight-faces)
 
-(defface agda2-highlight-missing-definition-face
-  '((((background light))
-     (:background "orange"))
-    (((background dark))
-     (:background "#804040")))
-  "The face used for type declarations with missing definitions."
-  :group 'agda2-highlight-faces)
-
 (defface agda2-highlight-typechecks-face
-  '((((background light))
-     (:background "light blue" :foreground "black"))
-    (((background dark))
-     (:background "#006080" :foreground "white")))
+  '((t (:background "light blue"
+        :foreground "black")))
   "The face used for code which is being type-checked."
   :group 'agda2-highlight-faces)
 
 (defvar agda2-highlight-faces
   '((keyword                . agda2-highlight-keyword-face)
     (comment                . font-lock-comment-face)
-    (background             . default)
-    (markup                 . font-lock-comment-delimiter-face)
+    (background             . font-lock-comment-face)
+    (markup                 . font-lock-comment-face)
     (string                 . agda2-highlight-string-face)
     (number                 . agda2-highlight-number-face)
     (symbol                 . agda2-highlight-symbol-face)
@@ -499,7 +380,6 @@ If `agda2-highlight-face-groups' is nil."
     (incompletepattern      . agda2-highlight-incomplete-pattern-face)
     (catchallclause         . agda2-highlight-catchall-clause-face)
     (confluenceproblem      . agda2-highlight-confluence-problem-face)
-    (missingdefinition      . agda2-highlight-missing-definition-face)
     (typechecks             . agda2-highlight-typechecks-face))
   "Alist mapping code aspects to the face used when displaying them.
 
