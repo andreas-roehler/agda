@@ -1,3 +1,5 @@
+{-# LANGUAGE TypeFamilies #-}
+
 {-| Given
 
     1. the function clauses @cs@
@@ -28,14 +30,12 @@ import qualified Data.List as List
 import Data.Maybe (mapMaybe, fromMaybe)
 import Data.Semigroup ( Semigroup, (<>))
 
-import Agda.Syntax.Abstract (IsProjP(..))
 import Agda.Syntax.Common
 import Agda.Syntax.Internal
 import Agda.Syntax.Literal
 import Agda.Syntax.Position
 
 import Agda.TypeChecking.Monad
-import Agda.TypeChecking.Monad.Builtin
 import Agda.TypeChecking.Pretty ( PrettyTCM(..) )
 import Agda.TypeChecking.Records
 import Agda.TypeChecking.Reduce
@@ -125,9 +125,9 @@ data SplitPatVar = SplitPatVar
 
 instance Pretty SplitPatVar where
   prettyPrec _ x =
-    (text $ patVarNameToString (splitPatVarName x)) <>
-    (text $ "@" ++ show (splitPatVarIndex x)) <>
-    (ifNull (splitExcludedLits x) empty $ \lits ->
+    text (patVarNameToString (splitPatVarName x)) <>
+    text ("@" ++ show (splitPatVarIndex x)) <>
+    ifNull (splitExcludedLits x) empty (\lits ->
       "\\{" <> prettyList_ lits <> "}")
 
 instance PrettyTCM SplitPatVar where
@@ -159,12 +159,14 @@ toSplitPSubst = (fmap . fmap) toSplitVar
 fromSplitPSubst :: SplitPSubstitution -> PatternSubstitution
 fromSplitPSubst = (fmap . fmap) fromSplitVar
 
-applySplitPSubst :: (Subst Term a) => SplitPSubstitution -> a -> a
+applySplitPSubst :: TermSubst a => SplitPSubstitution -> a -> a
 applySplitPSubst = applyPatSubst . fromSplitPSubst
 
 -- TODO: merge this instance and the one for DeBruijnPattern in
 -- Substitute.hs into one for Subst (Pattern' a) (Pattern' a).
-instance Subst SplitPattern SplitPattern where
+instance Subst SplitPattern where
+  type SubstArg SplitPattern = SplitPattern
+
   applySubst IdS p = p
   applySubst rho p = case p of
     VarP i x     ->
@@ -209,7 +211,7 @@ isTrivialPattern :: (HasConstInfo m) => Pattern' a -> m Bool
 isTrivialPattern p = case p of
   VarP{}      -> return True
   DotP{}      -> return True
-  ConP c i ps -> andM $ return (conPLazy i)
+  ConP c i ps -> andM $ ((conPLazy i ||) <$> isEtaCon (conName c))
                       : (map (isTrivialPattern . namedArg) ps)
   DefP{}      -> return False
   LitP{}      -> return False
@@ -470,23 +472,25 @@ isLitP :: (MonadReduce m, HasBuiltins m) => Pattern' a -> m (Maybe Literal)
 isLitP (LitP _ l) = return $ Just l
 isLitP (DotP _ u) = reduce u >>= \case
   Lit l -> return $ Just l
-  _     -> return $ Nothing
+  _ -> return $ Nothing
 isLitP (ConP c ci []) = do
   Con zero _ [] <- fromMaybe __IMPOSSIBLE__ <$> getBuiltin' builtinZero
-  if | c == zero -> return $ Just $ LitNat (getRange c) 0
-     | otherwise -> return Nothing
+  if c == zero
+    then return $ Just $ LitNat 0
+    else return Nothing
 isLitP (ConP c ci [a]) | visible a && isRelevant a = do
   Con suc _ [] <- fromMaybe __IMPOSSIBLE__ <$> getBuiltin' builtinSuc
-  if | c == suc  -> fmap inc <$> isLitP (namedArg a)
-     | otherwise -> return Nothing
+  if c == suc
+    then fmap inc <$> isLitP (namedArg a)
+    else return Nothing
   where
     inc :: Literal -> Literal
-    inc (LitNat r n) = LitNat (fuseRange c r) $ n + 1
+    inc (LitNat n) = LitNat $ n + 1
     inc _ = __IMPOSSIBLE__
 isLitP _ = return Nothing
 
 unLitP :: HasBuiltins m => Pattern' a -> m (Pattern' a)
-unLitP (LitP info l@(LitNat _ n)) | n >= 0 = do
+unLitP (LitP info l@(LitNat n)) | n >= 0 = do
   Con c ci es <- constructorForm' (fromMaybe __IMPOSSIBLE__ <$> getBuiltin' builtinZero)
                                   (fromMaybe __IMPOSSIBLE__ <$> getBuiltin' builtinSuc)
                                   (Lit l)

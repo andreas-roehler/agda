@@ -10,7 +10,6 @@ import Prelude hiding (null)
 import Control.Monad
 import Data.IntMap (IntMap)
 import qualified Data.IntMap as IntMap
-import Data.Traversable (traverse)
 
 import Agda.Syntax.Common
 import Agda.Syntax.Internal
@@ -26,7 +25,6 @@ import Agda.TypeChecking.Records
 import Agda.Utils.Empty
 import Agda.Utils.Functor (for, ($>))
 import Agda.Utils.Maybe
-import Agda.Utils.Monad
 import Agda.Utils.Null
 import Agda.Utils.Singleton
 import Agda.Utils.Size
@@ -208,8 +206,7 @@ matchPattern p u = case (p, u) of
       NotBlocked _ (Lit l')
           | l == l'            -> return (Yes YesSimplification empty , arg')
           | otherwise          -> return (No                          , arg')
-      NotBlocked _ (MetaV x _) -> return (DontKnow $ Blocked x ()     , arg')
-      Blocked x _              -> return (DontKnow $ Blocked x ()     , arg')
+      Blocked b _              -> return (DontKnow $ Blocked b ()     , arg')
       NotBlocked r t           -> return (DontKnow $ NotBlocked r' () , arg')
         where r' = stuckOn (Apply arg') r
 
@@ -231,7 +228,7 @@ matchPattern p u = case (p, u) of
       (theDef <$> getConstInfo c) >>= \case
         Constructor{ conData = d } -> do
           (theDef <$> getConstInfo d) >>= \case
-            r@Record{ recFields = fs } | YesEta <- recEtaEquality r -> return $ Just fs
+            r@Record{ recFields = fs } | YesEta <- recEtaEquality r -> return $ Just $ map argFromDom fs
             _ -> return Nothing
         _ -> __IMPOSSIBLE__
   (DefP o q ps, v) -> do
@@ -293,8 +290,7 @@ matchPattern p u = case (p, u) of
                 return (m, Arg info $ bld (mergeElims vs vs1))
               Nothing
                                     -> return (No                          , arg)
-          NotBlocked _ (MetaV x vs) -> return (DontKnow $ Blocked x ()     , arg)
-          Blocked x _               -> return (DontKnow $ Blocked x ()     , arg)
+          Blocked b _               -> return (DontKnow $ Blocked b ()     , arg)
           NotBlocked r _            -> return (DontKnow $ NotBlocked r' () , arg)
             where r' = stuckOn (Apply arg) r
 

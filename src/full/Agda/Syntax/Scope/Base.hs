@@ -1,4 +1,3 @@
-{-# LANGUAGE BangPatterns       #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE GADTs              #-}
 
@@ -6,12 +5,13 @@
 -}
 module Agda.Syntax.Scope.Base where
 
-import Prelude hiding ( null )
+import Prelude hiding ( null, length )
 
-import Control.Arrow (first, second)
+import Control.Arrow (first, second, (&&&))
 import Control.Monad
 
 import Data.Either (partitionEithers)
+import Data.Foldable ( length, toList )
 import Data.Function
 import qualified Data.List as List
 import Data.Map (Map)
@@ -19,7 +19,7 @@ import qualified Data.Map as Map
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Maybe
-import qualified Data.Semigroup as Sgrp
+import Data.Semigroup ( Semigroup(..) )
 
 import Data.Data (Data)
 
@@ -38,10 +38,12 @@ import qualified Agda.Utils.AssocList as AssocList
 import Agda.Utils.Functor
 import Agda.Utils.Lens
 import Agda.Utils.List
+import Agda.Utils.List1 ( List1, pattern (:|) )
+import qualified Agda.Utils.List1 as List1
 import Agda.Utils.Maybe (filterMaybe)
-import Agda.Utils.NonemptyList
 import Agda.Utils.Null
-import Agda.Utils.Pretty
+import Agda.Utils.Pretty hiding ((<>))
+import qualified Agda.Utils.Pretty as P
 import Agda.Utils.Singleton
 import qualified Agda.Utils.Map as Map
 
@@ -56,9 +58,14 @@ data Scope = Scope
       , scopeParents        :: [A.ModuleName]
       , scopeNameSpaces     :: ScopeNameSpaces
       , scopeImports        :: Map C.QName A.ModuleName
-      , scopeDatatypeModule :: Maybe DataOrRecord
+      , scopeDatatypeModule :: Maybe DataOrRecordModule
       }
   deriving (Data, Eq, Show)
+
+data DataOrRecordModule
+  = IsDataModule
+  | IsRecordModule
+  deriving (Data, Show, Eq, Enum, Bounded)
 
 -- | See 'Agda.Syntax.Common.Access'.
 data NameSpaceId
@@ -110,9 +117,22 @@ data ScopeInfo = ScopeInfo
       }
   deriving (Data, Show)
 
-type NameMap   = Map A.QName      (NonemptyList C.QName)
+-- | For the sake of highlighting, the '_scopeInverseName' map also stores
+--   the 'KindOfName' of an @A.QName@.
+data NameMapEntry = NameMapEntry
+  { qnameKind     :: KindOfName     -- ^ The 'anameKind'.
+  , qnameConcrete :: List1 C.QName  -- ^ Possible renderings of the abstract name.
+  }
+  deriving (Data, Show)
+
+-- | Invariant: the 'KindOfName' components should be equal
+--   whenever we have to concrete renderings of an abstract name.
+instance Semigroup NameMapEntry where
+  NameMapEntry k xs <> NameMapEntry _ ys = NameMapEntry k (xs <> ys)
+
+type NameMap   = Map A.QName      NameMapEntry
 type ModuleMap = Map A.ModuleName [C.QName]
--- type ModuleMap = Map A.ModuleName (NonemptyList C.QName)
+-- type ModuleMap = Map A.ModuleName (List1 C.QName)
 
 instance Eq ScopeInfo where
   ScopeInfo c1 m1 v1 l1 p1 _ _ _ _ _ == ScopeInfo c2 m2 v2 l2 p2 _ _ _ _ _ =
@@ -128,6 +148,12 @@ data BindingSource
   | PatternBound -- ^ @f ... =@
   | LetBound     -- ^ @let ... in@
   deriving (Data, Show, Eq)
+
+instance Pretty BindingSource where
+  pretty = \case
+    LambdaBound  -> "local"
+    PatternBound -> "pattern"
+    LetBound     -> "let-bound"
 
 -- | A local variable can be shadowed by an import.
 --   In case of reference to a shadowed variable, we want to report
@@ -152,7 +178,7 @@ instance Ord LocalVar where
 -- | We show shadowed variables as prefixed by a ".", as not in scope.
 instance Pretty LocalVar where
   pretty (LocalVar x _ []) = pretty x
-  pretty (LocalVar x _ xs) = "." <> pretty x
+  pretty (LocalVar x _ xs) = "." P.<> pretty x
 
 -- | Shadow a local name by a non-empty list of imports.
 shadowLocal :: [AbstractName] -> LocalVar -> LocalVar
@@ -324,7 +350,8 @@ data NameOrModule = NameNotModule | ModuleNotName
 
 -- Note: order does matter in this enumeration, see 'isDefName'.
 data KindOfName
-  = ConName                  -- ^ Constructor name.
+  = ConName                  -- ^ Constructor name ('Inductive' or don't know).
+  | CoConName                -- ^ Constructor name (definitely 'CoInductive').
   | FldName                  -- ^ Record field name.
   | PatternSynName           -- ^ Name of a pattern synonym.
   | GeneralizeName           -- ^ Name to be generalized
@@ -344,6 +371,37 @@ data KindOfName
 
 isDefName :: KindOfName -> Bool
 isDefName = (>= DataName)
+
+isConName :: KindOfName -> Maybe Induction
+isConName = \case
+  ConName   -> Just Inductive
+  CoConName -> Just CoInductive
+  _ -> Nothing
+
+conKindOfName :: Induction -> KindOfName
+conKindOfName = \case
+  Inductive   -> ConName
+  CoInductive -> CoConName
+
+-- | For ambiguous constructors, we might have both alternatives of 'Induction'.
+--   In this case, we default to 'ConName'.
+conKindOfName' :: Foldable t => t Induction -> KindOfName
+conKindOfName' = conKindOfName . approxConInduction
+
+-- | For ambiguous constructors, we might have both alternatives of 'Induction'.
+--   In this case, we default to 'Inductive'.
+approxConInduction :: Foldable t => t Induction -> Induction
+approxConInduction = fromMaybe Inductive . exactConInduction
+
+exactConInduction :: Foldable t => t Induction -> Maybe Induction
+exactConInduction is = case toList is of
+  [CoInductive] -> Just CoInductive
+  [Inductive]   -> Just Inductive
+  _ -> Nothing
+
+-- | Only return @[Co]ConName@ if no ambiguity.
+exactConName :: Foldable t => t Induction -> Maybe KindOfName
+exactConName = fmap conKindOfName . exactConInduction
 
 -- | A set of 'KindOfName', for the sake of 'elemKindsOfNames'.
 data KindsOfNames
@@ -365,6 +423,13 @@ someKindsOfNames = SomeKindsOfNames . Set.fromList
 
 exceptKindsOfNames :: [KindOfName] -> KindsOfNames
 exceptKindsOfNames = ExceptKindsOfNames . Set.fromList
+
+-- | Decorate something with 'KindOfName'
+
+data WithKind a = WithKind
+  { theKind     :: KindOfName
+  , kindedThing :: a
+  } deriving (Data, Show, Eq, Ord, Functor, Foldable, Traversable)
 
 -- | Where does a name come from?
 --
@@ -416,7 +481,7 @@ instance LensFixity AbstractName where
   lensFixity = lensAnameName . lensFixity
 
 -- | Van Laarhoven lens on 'anameName'.
-lensAnameName :: Functor m => (A.QName -> m A.QName) -> AbstractName -> m AbstractName
+lensAnameName :: Lens' A.QName AbstractName
 lensAnameName f am = f (anameName am) <&> \ m -> am { anameName = m }
 
 instance Eq AbstractModule where
@@ -426,7 +491,7 @@ instance Ord AbstractModule where
   compare = compare `on` amodName
 
 -- | Van Laarhoven lens on 'amodName'.
-lensAmodName :: Functor m => (A.ModuleName -> m A.ModuleName) -> AbstractModule -> m AbstractModule
+lensAmodName :: Lens' A.ModuleName AbstractModule
 lensAmodName f am = f (amodName am) <&> \ m -> am { amodName = m }
 
 
@@ -438,16 +503,16 @@ data ResolvedName
     }
 
   | -- | Function, data/record type, postulate.
-    DefinedName Access AbstractName -- ^ 'anameKind' can be 'DefName', 'MacroName', 'QuotableName'.
+    DefinedName Access AbstractName A.Suffix -- ^ 'anameKind' can be 'DefName', 'MacroName', 'QuotableName'.
 
   | -- | Record field name.  Needs to be distinguished to parse copatterns.
-    FieldName (NonemptyList AbstractName)       -- ^ @('FldName' ==) . 'anameKind'@ for all names.
+    FieldName (List1 AbstractName)       -- ^ @('FldName' ==) . 'anameKind'@ for all names.
 
   | -- | Data or record constructor name.
-    ConstructorName (NonemptyList AbstractName) -- ^ @('ConName' ==) . 'anameKind'@ for all names.
+    ConstructorName (Set Induction) (List1 AbstractName) -- ^ @isJust . 'isConName' . 'anameKind'@ for all names.
 
   | -- | Name of pattern synonym.
-    PatternSynResName (NonemptyList AbstractName) -- ^ @('PatternSynName' ==) . 'anameKind'@ for all names.
+    PatternSynResName (List1 AbstractName) -- ^ @('PatternSynName' ==) . 'anameKind'@ for all names.
 
   | -- | Unbound name.
     UnknownName
@@ -455,12 +520,16 @@ data ResolvedName
 
 instance Pretty ResolvedName where
   pretty = \case
-    VarName x _         -> "variable"    <+> pretty x
-    DefinedName a x     -> pretty a           <+> pretty x
-    FieldName xs        -> "field"       <+> pretty xs
-    ConstructorName xs  -> "constructor" <+> pretty xs
-    PatternSynResName x -> "pattern"     <+> pretty x
-    UnknownName         -> "<unknown name>"
+    VarName x b          -> pretty b <+> "variable" <+> pretty x
+    DefinedName a x s    -> pretty a      <+> (pretty x <> pretty s)
+    FieldName xs         -> "field"       <+> pretty xs
+    ConstructorName _ xs -> "constructor" <+> pretty xs
+    PatternSynResName x  -> "pattern"     <+> pretty x
+    UnknownName          -> "<unknown name>"
+
+instance Pretty A.Suffix where
+  pretty NoSuffix   = mempty
+  pretty (Suffix i) = text (show i)
 
 -- * Operations on name and module maps.
 
@@ -514,6 +583,16 @@ mapNameSpaceM fd fm fs ns = update ns <$> fd (nsNames ns) <*> fm (nsModules ns) 
 ------------------------------------------------------------------------
 -- * General operations on scopes
 ------------------------------------------------------------------------
+
+instance Null Scope where
+  empty = emptyScope
+  null  = __IMPOSSIBLE__
+    -- TODO: define when needed, careful about scopeNameSpaces!
+
+instance Null ScopeInfo where
+  empty = emptyScopeInfo
+  null  = __IMPOSSIBLE__
+    -- TODO: define when needed, careful about _scopeModules!
 
 -- | The empty scope.
 emptyScope :: Scope
@@ -754,7 +833,7 @@ applyImportDirective_ dir@(ImportDirective{ impRenaming }) s
   | null dir  = (s, (empty, empty))
       -- Since each run of applyImportDirective rebuilds the scope
       -- with cost O(n log n) time, it makes sense to test for the identity.
-  | otherwise = (mergeScope sUse sRen, (nameClashes, moduleClashes))
+  | otherwise = (recomputeInScopeSets $ mergeScope sUse sRen, (nameClashes, moduleClashes))
   where
     -- | Names kept via using/hiding.
     sUse :: Scope
@@ -813,8 +892,8 @@ applyImportDirective_ dir@(ImportDirective{ impRenaming }) s
     -- O(n * (log n + log (length rho))).
     rename :: [C.Renaming] -> Scope -> Scope
     rename rho = mapScope_ (updateFxs .
-                            Map.mapMaybeKeys (AssocList.apply drho))
-                           (Map.mapMaybeKeys (AssocList.apply mrho))
+                            updateThingsInScope (AssocList.apply drho))
+                           (updateThingsInScope (AssocList.apply mrho))
                            id
       where
         (drho, mrho) = partitionEithers $ for rho $ \case
@@ -834,6 +913,14 @@ applyImportDirective_ dir@(ImportDirective{ impRenaming }) s
           -- Update fixity of all abstract names targeted by concrete name y.
           upd m (y, fx) = Map.adjust (map $ set lensFixity fx) y m
 
+        updateThingsInScope
+          :: forall a. SetBindingSite a
+          => (C.Name -> Maybe C.Name)
+          -> ThingsInScope a -> ThingsInScope a
+        updateThingsInScope f = Map.fromList . mapMaybe upd . Map.toAscList
+          where
+          upd :: (C.Name, [a]) -> Maybe (C.Name, [a])
+          upd (x, ys) = f x <&> \ x' -> (x', setBindingSite (getRange x') ys)
 
 -- | Rename the abstract names in a scope.
 renameCanonicalNames :: Map A.QName A.QName -> Map A.ModuleName A.ModuleName ->
@@ -943,7 +1030,7 @@ flattenScope ms scope =
                [ qual c (build ms' exportedNamesInScope $ moduleScope a)
                | (c, a) <- Map.toList $ scopeImports root
                , let -- get the suffixes of c in ms
-                     ms' = mapMaybe (List.stripPrefix $ C.qnameParts c) ms
+                     ms' = mapMaybe (List.stripPrefix $ List1.toList $ C.qnameParts c) ms
                , not $ null ms' ]
     qual c = Map.mapKeys (q c)
       where
@@ -952,7 +1039,7 @@ flattenScope ms scope =
 
     build :: [[C.Name]] -> (forall a. InScope a => Scope -> ThingsInScope a) -> Scope -> Map C.QName [AbstractName]
     build ms getNames s = Map.unionsWith (++) $
-        (Map.mapKeysMonotonic C.QName $ getNames s) :
+        Map.mapKeysMonotonic C.QName (getNames s) :
           [ Map.mapKeysMonotonic (\ y -> C.Qual x y) $
               build ms' exportedNamesInScope $ moduleScope m
           | (x, mods) <- Map.toList (getNames s)
@@ -983,7 +1070,7 @@ concreteNamesInScope scope =
 
     build :: (forall a. InScope a => Scope -> ThingsInScope a) -> Scope -> Set C.QName
     build getNames s = Set.unions $
-        (Set.fromList $ map C.QName $ Map.keys (getNames s :: ThingsInScope AbstractName)) :
+        Set.fromList (map C.QName $ Map.keys (getNames s :: ThingsInScope AbstractName)) :
           [ Set.mapMonotonic (\ y -> C.Qual x y) $
               build exportedNamesInScope $ moduleScope m
           | (x, mods) <- Map.toList (getNames s)
@@ -1025,8 +1112,8 @@ scopeLookup' q scope =
             -- | Get the definitions named @x@ in scope @s@ and interpret them as modules.
             -- Andreas, 2013-05-01: Issue 836 debates this feature:
             -- Qualified constructors are qualified by their datatype rather than a module
-            defs :: [A.ModuleName]
-            defs = mnameFromList . qnameToList . anameName . fst <$> lookupName x s
+            defs :: [A.ModuleName] -- NB:: Defined but not used
+            defs = qnameToMName . anameName . fst <$> lookupName x s
         -- Andreas, 2013-05-01:  Issue 836 complains about the feature
         -- that constructors can also be qualified by their datatype
         -- and projections by their record type.  This feature is off
@@ -1088,27 +1175,56 @@ isNameInScope q scope =
   billToPure [ Scoping, InverseScopeLookup ] $
   Set.member q (scope ^. scopeInScope)
 
--- | Find the concrete names that map (uniquely) to a given abstract name.
---   Sort by length, shortest first.
+-- | Find the concrete names that map (uniquely) to a given abstract qualified name.
+--   Sort by number of modules in the qualified name, unqualified names first.
+inverseScopeLookupName :: A.QName -> ScopeInfo -> [C.QName]
+inverseScopeLookupName = inverseScopeLookupName' AmbiguousConProjs
 
-inverseScopeLookup :: Either A.ModuleName A.QName -> ScopeInfo -> [C.QName]
-inverseScopeLookup = inverseScopeLookup' AmbiguousConProjs
+inverseScopeLookupName' :: AllowAmbiguousNames -> A.QName -> ScopeInfo -> [C.QName]
+inverseScopeLookupName' amb q scope =
+  maybe [] (List1.toList . qnameConcrete) $ inverseScopeLookupName'' amb q scope
 
-inverseScopeLookup' :: AllowAmbiguousNames -> Either A.ModuleName A.QName -> ScopeInfo -> [C.QName]
-inverseScopeLookup' amb name scope = billToPure [ Scoping , InverseScopeLookup ] $
-  case name of
-    Left  m -> best $ filter unambiguousModule $ findModule m
-    Right q -> best $ filter unambiguousName   $ findName q
+-- | A version of 'inverseScopeLookupName' that also delivers the 'KindOfName'.
+--   Used in highlighting.
+inverseScopeLookupName'' :: AllowAmbiguousNames -> A.QName -> ScopeInfo -> Maybe NameMapEntry
+inverseScopeLookupName'' amb q scope = billToPure [ Scoping , InverseScopeLookup ] $ do
+  NameMapEntry k xs <- Map.lookup q (scope ^. scopeInverseName)
+  NameMapEntry k <$> do List1.nonEmpty $ best $ List1.filter unambiguousName xs
   where
-    findName   x = maybe [] toList $ Map.lookup x (scope ^. scopeInverseName)
-    findModule x = fromMaybe []    $ Map.lookup x (scope ^. scopeInverseModule)
+    best :: [C.QName] -> [C.QName]
+    best = List.sortOn $ length . C.qnameParts
 
-    len :: C.QName -> Int
-    len (C.QName _)  = 1
-    len (C.Qual _ x) = 1 + len x
+    unique :: forall a . [a] -> Bool
+    unique []      = __IMPOSSIBLE__
+    unique [_]     = True
+    unique (_:_:_) = False
+
+    unambiguousName :: C.QName -> Bool
+    unambiguousName q = or
+      [ amb == AmbiguousAnything
+      , unique xs
+      , amb == AmbiguousConProjs && or
+          [ all (isJust . isConName) (k:ks)
+          , k `elem` [ FldName, PatternSynName ] && all (k ==) ks
+          ]
+      ]
+      where
+      xs   = scopeLookup q scope
+      k:ks = map anameKind xs
+
+-- | Find the concrete names that map (uniquely) to a given abstract module name.
+--   Sort by length, shortest first.
+inverseScopeLookupModule :: A.ModuleName -> ScopeInfo -> [C.QName]
+inverseScopeLookupModule = inverseScopeLookupModule' AmbiguousNothing
+
+inverseScopeLookupModule' :: AllowAmbiguousNames -> A.ModuleName -> ScopeInfo -> [C.QName]
+inverseScopeLookupModule' amb m scope = billToPure [ Scoping , InverseScopeLookup ] $
+  best $ filter unambiguousModule $ findModule m
+  where
+    findModule m = fromMaybe [] $ Map.lookup m (scope ^. scopeInverseModule)
 
     best :: [C.QName] -> [C.QName]
-    best = List.sortBy (compare `on` len)
+    best = List.sortOn $ length . C.qnameParts
 
     unique :: forall a . [a] -> Bool
     unique []      = __IMPOSSIBLE__
@@ -1116,11 +1232,6 @@ inverseScopeLookup' amb name scope = billToPure [ Scoping , InverseScopeLookup ]
     unique (_:_:_) = False
 
     unambiguousModule q = amb == AmbiguousAnything || unique (scopeLookup q scope :: [AbstractModule])
-    unambiguousName   q = amb == AmbiguousAnything
-        || unique xs
-        || amb == AmbiguousConProjs
-           && or [ all ((kind ==) . anameKind) xs | kind <- [ConName, FldName, PatternSynName] ]
-      where xs = scopeLookup q scope
 
 recomputeInverseScopeMaps :: ScopeInfo -> ScopeInfo
 recomputeInverseScopeMaps scope = billToPure [ Scoping , InverseScopeLookup ] $
@@ -1144,7 +1255,7 @@ recomputeInverseScopeMaps scope = billToPure [ Scoping , InverseScopeLookup ] $
     internalName (C.Qual m n) = intern m || internalName n
       where
       -- Recognize fresh names created Parser.y
-      intern (C.Name _ _ [ C.Id ('.' : '#' : _) ]) = True
+      intern (C.Name _ _ (C.Id ('.' : '#' : _) :| [])) = True
       intern _ = False
 
     findName :: Ord a => Map a [(A.ModuleName, C.Name)] -> a -> [C.QName]
@@ -1174,30 +1285,50 @@ recomputeInverseScopeMaps scope = billToPure [ Scoping , InverseScopeLookup ] $
       return (q, singleton (m, x))
 
     nameMap :: NameMap
-    nameMap = Map.fromListWith (Sgrp.<>) $ do
+    nameMap = Map.fromListWith (<>) $ do
       (m, s)  <- scopes
       (x, ms) <- Map.toList (allNamesInScope s)
-      q       <- anameName <$> ms
+      (q, k)  <- (anameName &&& anameKind) <$> ms
+      let ret z = return (q, NameMapEntry k $ singleton z)
       if m `elem` current
-        then return (q, singleton (C.QName x))
+        then ret $ C.QName x
         else do
           y <- findModule m
           let z = C.qualify y x
           guard $ not $ internalName z
-          return (q, singleton z)
+          ret z
 
--- | Find the concrete names that map (uniquely) to a given abstract qualified name.
---   Sort by length, shortest first.
-inverseScopeLookupName :: A.QName -> ScopeInfo -> [C.QName]
-inverseScopeLookupName x = inverseScopeLookup (Right x)
+------------------------------------------------------------------------
+-- * Update binding site
+------------------------------------------------------------------------
 
-inverseScopeLookupName' :: AllowAmbiguousNames -> A.QName -> ScopeInfo -> [C.QName]
-inverseScopeLookupName' ambCon x = inverseScopeLookup' ambCon (Right x)
+-- | Set the 'nameBindingSite' in an abstract name.
+class SetBindingSite a where
+  setBindingSite :: Range -> a -> a
 
--- | Find the concrete names that map (uniquely) to a given abstract module name.
---   Sort by length, shortest first.
-inverseScopeLookupModule :: A.ModuleName -> ScopeInfo -> [C.QName]
-inverseScopeLookupModule x = inverseScopeLookup (Left x)
+  default setBindingSite
+    :: (SetBindingSite b, Functor t, t b ~ a)
+    => Range -> a -> a
+  setBindingSite = fmap . setBindingSite
+
+instance SetBindingSite a => SetBindingSite [a]
+
+instance SetBindingSite A.Name where
+  setBindingSite r x = x { nameBindingSite = r }
+
+instance SetBindingSite A.QName where
+  setBindingSite r x = x { qnameName = setBindingSite r $ qnameName x }
+
+-- | Sets the binding site of all names in the path.
+instance SetBindingSite A.ModuleName where
+  setBindingSite r (MName x) = MName $ setBindingSite r x
+
+instance SetBindingSite AbstractName where
+  setBindingSite r x = x { anameName = setBindingSite r $ anameName x }
+
+instance SetBindingSite AbstractModule where
+  setBindingSite r x = x { amodName = setBindingSite r $ amodName x }
+
 
 ------------------------------------------------------------------------
 -- * (Debug) printing
@@ -1227,15 +1358,17 @@ prettyNameSpace (NameSpace names mods _) =
     pr (x, y) = pretty x <+> "-->" <+> pretty y
 
 instance Pretty Scope where
-  pretty (scope@Scope{ scopeName = name, scopeParents = parents, scopeImports = imps }) =
-    vcat $
-      [ "scope" <+> pretty name ] ++ ind (
-        concat [ blockOfLines (pretty nsid) $ prettyNameSpace ns
-               | (nsid, ns) <- scopeNameSpaces scope ]
-      ++ blockOfLines "imports"
-           (case Map.keys imps of [] -> []; ks -> [ prettyList ks ])
-      )
-    where ind = map $ nest 2
+  pretty scope@Scope{ scopeName = name, scopeParents = parents, scopeImports = imps } =
+    vcat $ concat
+      [ [ "scope" <+> pretty name ]
+      , scopeNameSpaces scope >>= \ (nsid, ns) -> do
+          block (pretty nsid) $ prettyNameSpace ns
+      , ifNull (Map.keys imps) [] {-else-} $ \ ks ->
+          block "imports" [ prettyList ks ]
+      ]
+    where
+    block :: Doc -> [Doc] -> [Doc]
+    block hd = map (nest 2) . blockOfLines hd
 
 -- | Add first string only if list is non-empty.
 blockOfLines :: Doc -> [Doc] -> [Doc]
@@ -1243,16 +1376,17 @@ blockOfLines _  [] = []
 blockOfLines hd ss = hd : map (nest 2) ss
 
 instance Pretty ScopeInfo where
-  pretty (ScopeInfo this mods toBind locals ctx _ _ _ _ _) = vcat $
-    [ "ScopeInfo"
-    , "  current = " <> pretty this
-    ] ++
-    (if null toBind then [] else [ "  toBind  = " <> pretty locals ]) ++
-    (if null locals then [] else [ "  locals  = " <> pretty locals ]) ++
-    [ "  context = " <> pretty ctx
-    , "  modules"
-    ] ++
-    map (nest 4) (List.filter (not . null) $ map pretty $ Map.elems mods)
+  pretty (ScopeInfo this mods toBind locals ctx _ _ _ _ _) = vcat $ concat
+    [ [ "ScopeInfo"
+      , nest 2 $ "current =" <+> pretty this
+      ]
+    , [ nest 2 $ "toBind  =" <+> pretty locals | not (null toBind) ]
+    , [ nest 2 $ "locals  =" <+> pretty locals | not (null locals) ]
+    , [ nest 2 $ "context =" <+> pretty ctx
+      , nest 2 $ "modules"
+      ]
+    , map (nest 4 . pretty) $ Map.elems mods
+    ]
 
 ------------------------------------------------------------------------
 -- * Boring instances

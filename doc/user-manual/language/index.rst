@@ -38,8 +38,10 @@ Language Reference
    record-types
    reflection
    rewriting
+   runtime-irrelevance
    safe-agda
    sized-types
+   sort-system
    syntactic-sugar
    syntax-declarations
    telescopes

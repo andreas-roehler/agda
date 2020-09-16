@@ -1,13 +1,12 @@
 
 module Agda.TypeChecking.Conversion where
 
+import Control.Monad.Except ( MonadError )
 import qualified Control.Monad.Fail as Fail
 
 import Agda.Syntax.Internal
 import Agda.TypeChecking.Monad
-import Agda.TypeChecking.Monad.Builtin (HasBuiltins)
 import Agda.TypeChecking.Warnings
-import Agda.Utils.Except ( MonadError )
 
 type MonadConversion m =
   ( MonadReduce m
@@ -33,7 +32,6 @@ compareAtom  :: MonadConversion m => Comparison -> CompareAs -> Term -> Term -> 
 compareArgs  :: MonadConversion m => [Polarity] -> [IsForced] -> Type -> Term -> Args -> Args -> m ()
 compareElims :: MonadConversion m => [Polarity] -> [IsForced] -> Type -> Term -> [Elim] -> [Elim] -> m ()
 compareType  :: MonadConversion m => Comparison -> Type -> Type -> m ()
-compareTel   :: MonadConversion m => Type -> Type -> Comparison -> Telescope -> Telescope -> m ()
 compareSort  :: MonadConversion m => Comparison -> Sort -> Sort -> m ()
 compareLevel :: MonadConversion m => Comparison -> Level -> Level -> m ()
 equalTerm    :: MonadConversion m => Type -> Term -> Term -> m ()

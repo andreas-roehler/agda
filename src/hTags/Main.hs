@@ -42,6 +42,10 @@ import Outputable
 import DynFlags (opt_P, sOpt_P, parseDynamicFilePragma)
 import GhcMonad (GhcT(..), Ghc(..))
 
+#if MIN_VERSION_ghc(8,10,1)
+import ToolSettings
+#endif
+
 import Language.Haskell.Extension as LHE
 import Distribution.PackageDescription.Configuration (flattenPackageDescription)
 import Distribution.PackageDescription hiding (options)
@@ -94,12 +98,16 @@ goFile file = do
   st <- liftIO $ filePState dflags srcFile
   case parse st pMod of
     POk _ m         -> return $ removeDuplicates $ tags $ unLoc m
-#if MIN_VERSION_ghc(8,4,0)
+#if MIN_VERSION_ghc(8,10,1)
+    PFailed pState -> liftIO $ do
+      printBagOfErrors dflags $ getErrorMessages pState dflags
+#elif MIN_VERSION_ghc(8,4,0)
     PFailed _ loc err -> liftIO $ do
+      print (mkPlainErrMsg dflags loc err)
 #else
     PFailed loc err -> liftIO $ do
-#endif
       print (mkPlainErrMsg dflags loc err)
+#endif
       exitWith $ ExitFailure 1
 
 runCmd :: String -> IO String
@@ -118,8 +126,9 @@ extractLangSettings ::
   GenericPackageDescription
   -> ([Extension], Maybe LHE.Language)
 extractLangSettings gpd =
-  fromMaybe ([], Nothing) $
-    (defaultExtensions &&& defaultLanguage) . libBuildInfo <$> (library . configurePackageDescription) gpd
+  maybe ([], Nothing)
+  ((defaultExtensions &&& defaultLanguage) . libBuildInfo)
+  ((library . configurePackageDescription) gpd)
 
 extToOpt :: Extension -> String
 extToOpt (UnknownExtension e) = "-X" ++ e
@@ -157,10 +166,18 @@ main = do
               dynFlags <- getSessionDynFlags
               let dynFlags' =
                     dynFlags {
+#if MIN_VERSION_ghc(8,10,1)
+                    toolSettings = (toolSettings dynFlags) {
+                        toolSettings_opt_P = concatMap (\i -> [i, "-include"]) (optIncludes opts) ++
+                                             opt_P dynFlags
+                        }
+#else
                     settings = (settings dynFlags) {
                         sOpt_P = concatMap (\i -> [i, "-include"]) (optIncludes opts) ++
                                  opt_P dynFlags
                         }
+#endif
+
 #if MIN_VERSION_ghc(8,6,1)
                     , includePaths = case includePaths dynFlags of
                                        IncludeSpecs qs gs -> IncludeSpecs qs (optIncludePath opts ++ gs)

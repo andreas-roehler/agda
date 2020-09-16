@@ -10,7 +10,6 @@ import Control.Monad.Reader
 import Data.Maybe
 import Data.Map (Map)
 import qualified Data.Map as Map
-import Data.Traversable (traverse)
 
 import Agda.Syntax.Common
 import Agda.Syntax.Internal as I
@@ -43,6 +42,7 @@ import Agda.Utils.Maybe
 import Agda.Utils.Monad
 import Agda.Utils.Pretty (prettyShow)
 import qualified Agda.Utils.Pretty as P
+import qualified Agda.Utils.SmallSet as SmallSet
 
 import Agda.Utils.Impossible
 
@@ -226,7 +226,7 @@ casetree cc = do
     CC.Done xs v -> withContextSize (length xs) $ do
       -- Issue 2469: Body context size (`length xs`) may be smaller than current context size
       -- if some arguments are not used in the body.
-      v <- lift (putAllowedReductions [ProjectionReductions, CopatternReductions] $ normalise v)
+      v <- lift (putAllowedReductions (SmallSet.fromList [ProjectionReductions, CopatternReductions]) $ normalise v)
       substTerm v
     CC.Case _ (CC.Branches True _ _ _ Just{} _ _) -> __IMPOSSIBLE__
       -- Andreas, 2016-06-03, issue #1986: Ulf: "no catch-all for copatterns!"
@@ -247,13 +247,13 @@ casetree cc = do
                 c' <- lift (canonicalName c)
                 dtNm <- conData . theDef <$> lift (getConstInfo c')
                 return $ C.CTData dtNm
-              ([], (LitChar _ _):_)  -> return C.CTChar
-              ([], (LitString _ _):_) -> return C.CTString
-              ([], (LitFloat _ _):_) -> return C.CTFloat
-              ([], (LitQName _ _):_) -> return C.CTQName
+              ([], (LitChar _):_)  -> return C.CTChar
+              ([], (LitString _):_) -> return C.CTString
+              ([], (LitFloat _):_) -> return C.CTFloat
+              ([], (LitQName _):_) -> return C.CTQName
               _ -> __IMPOSSIBLE__
         updateCatchAll catchAll $ do
-          x <- lookupLevel n <$> asks ccCxt
+          x <- asks (lookupLevel n . ccCxt)
           def <- fromCatchAll
           let caseInfo = C.CaseInfo { caseType = caseTy, caseLazy = lazy }
           C.TCase x caseInfo def <$> do
@@ -264,7 +264,7 @@ casetree cc = do
     -- normally, Agda should make sure that a pattern match is total,
     -- so we set the default to unreachable if no default has been provided.
     fromCatchAll :: CC C.TTerm
-    fromCatchAll = maybe C.tUnreachable C.TVar <$> asks ccCatchAll
+    fromCatchAll = asks (maybe C.tUnreachable C.TVar . ccCatchAll)
 
 commonArity :: CC.CompiledClauses -> Int
 commonArity cc =
@@ -274,7 +274,7 @@ commonArity cc =
   where
     arities cxt (Case (Arg _ x) (Branches False cons eta lits def _ _)) =
       concatMap (wArities cxt') (Map.elems cons) ++
-      concatMap (wArities cxt') (map snd $ maybeToList eta) ++
+      concatMap ((wArities cxt') . snd) (maybeToList eta) ++
       concatMap (wArities cxt' . WithArity 0) (Map.elems lits) ++
       concat [ arities cxt' c | Just c <- [def] ] -- ??
       where cxt' = max (x + 1) cxt
@@ -297,7 +297,7 @@ updateCatchAll (Just cc) cont = do
 -- MUST NOT be used inside `cont`.
 withContextSize :: Int -> CC C.TTerm -> CC C.TTerm
 withContextSize n cont = do
-  diff <- (n -) . length <$> asks ccCxt
+  diff <- asks (((n -) . length) . ccCxt)
 
   if diff <= 0
   then do
@@ -317,7 +317,7 @@ withContextSize n cont = do
 -- Updates the catchAll expression to take the additional lambdas into account.
 lambdasUpTo :: Int -> CC C.TTerm -> CC C.TTerm
 lambdasUpTo n cont = do
-  diff <- (n -) . length <$> asks ccCxt
+  diff <- asks (((n -) . length) . ccCxt)
 
   if diff <= 0 then cont -- no new lambdas needed
   else do
@@ -372,7 +372,7 @@ mkRecord fs = lift $ do
   -- Get the name of the first field
   let p1 = fst $ headWithDefault __IMPOSSIBLE__ $ Map.toList fs
   -- Use the field name to get the record constructor and the field names.
-  I.ConHead c _ind xs <- conSrcCon . theDef <$> (getConstInfo =<< canonicalName . I.conName =<< recConFromProj p1)
+  I.ConHead c IsRecord{} _ind xs <- conSrcCon . theDef <$> (getConstInfo =<< canonicalName . I.conName =<< recConFromProj p1)
   reportSDoc "treeless.convert.mkRecord" 60 $ vcat
     [ text "record constructor fields: xs      = " <+> (text . show) xs
     , text "to be filled with content: keys fs = " <+> (text . show) (Map.keys fs)
@@ -398,12 +398,12 @@ substTerm :: I.Term -> CC C.TTerm
 substTerm term = normaliseStatic term >>= \ term ->
   case I.unSpine $ etaContractErased term of
     I.Var ind es -> do
-      ind' <- lookupIndex ind <$> asks ccCxt
+      ind' <- asks (lookupIndex ind . ccCxt)
       let args = fromMaybe __IMPOSSIBLE__ $ I.allApplyElims es
       C.mkTApp (C.TVar ind') <$> substArgs args
     I.Lam _ ab ->
       C.TLam <$>
-        local (\e -> e { ccCxt = 0 : (shift 1 $ ccCxt e) })
+        local (\e -> e { ccCxt = 0 : shift 1 (ccCxt e) })
           (substTerm $ I.unAbs ab)
     I.Lit l -> return $ C.TLit l
     I.Level _ -> return C.TUnit

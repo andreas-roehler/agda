@@ -1,12 +1,14 @@
 
 module Agda.Auto.Convert where
 
+import Control.Monad.Except
 import Control.Monad.State
+
+import Data.Bifunctor (first)
 import Data.IORef
 import Data.Maybe (catMaybes)
 import Data.Map (Map)
 import qualified Data.Map as Map
-import Data.Traversable (traverse)
 
 import Agda.Syntax.Common (Hiding(..), getHiding, Arg)
 import Agda.Syntax.Concrete (exprFieldA)
@@ -42,7 +44,6 @@ import Agda.Auto.Syntax hiding (getConst)
 import Agda.Auto.CaseSplit hiding (lift)
 
 import Agda.Utils.Either
-import Agda.Utils.Except      ( ExceptT , MonadError(throwError) )
 import Agda.Utils.Lens
 import Agda.Utils.Monad       ( forMaybeMM )
 import Agda.Utils.Permutation ( Permutation(Perm), permute, takeP, compactP )
@@ -100,7 +101,7 @@ tomy imi icns typs = do
    nxt <- popMapS sConsts (\x y -> y {sConsts = x})
    case nxt of
     Just cn -> do
-     cmap <- fst `liftM` gets sConsts
+     cmap <- gets (fst . sConsts)
      let (mode, c) = cmap Map.! cn
      def <- lift $ getConstInfo cn
      let typ = MB.defType def
@@ -121,6 +122,7 @@ tomy imi icns typs = do
       MB.Function {MB.funClauses = clauses} -> clausesToDef clauses
       -- MB.Primitive {MB.primClauses = []} -> throwError $ strMsg "Auto: Primitive functions are not supported" -- Andreas, 2013-06-17 breaks interaction/AutoMisc
       MB.Primitive {MB.primClauses = clauses} -> clausesToDef clauses
+      MB.PrimitiveSort{} -> __IMPOSSIBLE__
       MB.Datatype {MB.dataCons = cons} -> do
        cons2 <- mapM (\con -> getConst True con TMAll) cons
        return (Datatype cons2 [], [])
@@ -137,7 +139,8 @@ tomy imi icns typs = do
        let Datatype [con] [] = cdcont cc
        lift $ liftIO $ modifyIORef con (\cdef -> cdef {cdtype = contyp'})
 
-       projfcns <- mapM (\name -> getConst False name TMAll) (map Cm.unArg fields)
+       projfcns <- mapM (\ dom -> getConst False (I.unDom dom) TMAll) fields
+       -- Equivalently projfcns <- mapM (($ TMAll) . getConst False . I.unDom) fields
 
        return (Datatype [con] projfcns, []{-map snd fields-})
       MB.Constructor {MB.conData = dt} -> do
@@ -171,7 +174,7 @@ tomy imi icns typs = do
         Just sol -> do
          m <- getMeta mi
          sol' <- convert sol
-         modify $ \s -> s {sEqs = (Map.insert (Map.size (fst $ sEqs s)) (Just (False, Meta m, sol')) (fst $ sEqs s), snd $ sEqs s)}
+         modify $ \s -> s {sEqs = first (Map.insert (Map.size (fst $ sEqs s)) (Just (False, Meta m, sol'))) (sEqs s)}
        let tt = MB.jMetaType $ mvJudgement mv
            minfo = getMetaInfo mv
            localVars = map (snd . I.unDom) . envContext . clEnv $ minfo
@@ -185,7 +188,7 @@ tomy imi icns typs = do
        typ' <- convert targettype
        ctx' <- mapM convert localVars
        modify (\s -> s {sCurMeta = Nothing})
-       modify (\s -> s {sMetas = (Map.adjust (\(m, _, deps) -> (m, Just (typ', ctx'), deps)) mi (fst $ sMetas s), snd $ sMetas s)})
+       modify (\s -> s {sMetas = first (Map.adjust (\(m, _, deps) -> (m, Just (typ', ctx'), deps)) mi) (sMetas s)})
        r projfcns
       Nothing -> do
        nxt <- popMapS sEqs (\x y -> y {sEqs = x})
@@ -194,7 +197,7 @@ tomy imi icns typs = do
          let (ineq, e, i) = eqs !! eqi
          e' <- convert e
          i' <- convert i
-         modify (\s -> s {sEqs = (Map.adjust (\_ -> Just (ineq, e', i')) eqi (fst $ sEqs s), snd $ sEqs s)})
+         modify (\s -> s {sEqs = first (Map.adjust (\_ -> Just (ineq, e', i')) eqi) (sEqs s)})
          r projfcns
         Nothing ->
          return projfcns
@@ -223,7 +226,7 @@ getConst iscon name mode = do
   MB.Record {MB.recConHead = con} -> do
    let conname = I.conName con
        conflds = I.conFields con
-   cmap <- fst `liftM` gets sConsts
+   cmap <- gets (fst . sConsts)
    case Map.lookup name cmap of
     Just (mode', c) ->
      if iscon then do
@@ -241,7 +244,7 @@ getConst iscon name mode = do
      modify (\s -> s {sConsts = (Map.insert name (mode, c) cmap, name : snd (sConsts s))})
      return $ if iscon then ccon else c
   _ -> do
-   cmap <- fst `liftM` gets sConsts
+   cmap <- gets (fst . sConsts)
    case Map.lookup name cmap of
     Just (mode', c) ->
      return c
@@ -264,7 +267,7 @@ getdfv mainm name = do
 
 getMeta :: I.MetaId -> TOM (Metavar (Exp O) (RefInfo O))
 getMeta name = do
- mmap <- fst `liftM` gets sMetas
+ mmap <- gets (fst . sMetas)
  case Map.lookup name mmap of
   Just (m, _, _) ->
    return m
@@ -281,7 +284,6 @@ getEqs = forMaybeMM getAllConstraints $ \ eqc -> do
       ei <- etaContract i
       ee <- etaContract e
       return $ Just (tomyIneq ineq, ee, ei)
-    MB.Guarded (MB.UnBlock _) _pid -> return Nothing
     _ -> return Nothing
 
 copatternsNotImplemented :: MB.TCM a
@@ -320,8 +322,8 @@ instance Conversion TOM I.Clause (Maybe ([Pat O], MExp O)) where
 
 instance Conversion TOM (Cm.Arg I.Pattern) (Pat O) where
   convert p = case Cm.unArg p of
-    I.IApplyP _ _ _ n  -> return $ PatVar (show n)
-    I.VarP _ n  -> return $ PatVar (show n)
+    I.IApplyP _ _ _ n  -> return $ PatVar (prettyShow n)
+    I.VarP _ n  -> return $ PatVar (prettyShow n)
     I.DotP _ _  -> return $ PatVar "_"
       -- because Agda includes these when referring to variables in the body
     I.ConP con _ pats -> do
@@ -388,9 +390,7 @@ instance Conversion TOM I.Term (MExp O) where
             case mcurmeta of
               Nothing -> return ()
               Just curmeta ->
-                modify $ \ s -> s { sMetas = ( Map.adjust (\(m, x, deps) -> (m, x, mid : deps)) curmeta (fst $ sMetas s)
-                                           , snd $ sMetas s
-                                           ) }
+                modify $ \ s -> s { sMetas = first (Map.adjust (\(m, x, deps) -> (m, x, mid : deps)) curmeta) (sMetas s) }
             m <- getMeta mid
             return $ Meta m
           _ -> convert t
@@ -426,15 +426,10 @@ fmExp m (I.DontCare _) = False
 fmExp _ I.Dummy{} = False
 
 fmExps :: I.MetaId -> I.Args -> Bool
-fmExps m [] = False
-fmExps m (a : as) = fmExp m (Cm.unArg a) || fmExps m as
+fmExps m as = any (fmExp m . Cm.unArg) as
 
 fmLevel :: I.MetaId -> I.PlusLevel -> Bool
-fmLevel m (I.Plus _ l) = case l of
-  I.MetaLevel m' _   -> m == m'
-  I.NeutralLevel _ v -> fmExp m v
-  I.BlockedLevel _ v -> fmExp m v
-  I.UnreducedLevel v -> fmExp m v
+fmLevel m (I.Plus _ l) = fmExp m l
 
 -- ---------------------------------------------
 
@@ -485,7 +480,7 @@ instance Conversion MOT (Exp O) I.Term where
         frommyExps n as v
 -}
           (ndrop, h) = case iscon of
-                         Just (n,fs) -> (n, \ q -> I.Con (I.ConHead q Cm.Inductive fs) Cm.ConOSystem)
+                         Just (n,fs) -> (n, \ q -> I.Con (I.ConHead q I.IsData Cm.Inductive fs) Cm.ConOSystem)
                          Nothing -> (0, \ f vs -> I.Def f vs)
       frommyExps ndrop as (h name [])
     Lam hid t -> I.Lam (icnvh hid) <$> convert t
@@ -641,7 +636,7 @@ frommyClause (ids, pats, mrhs) = do
         cdef <- lift $ readIORef c
         let (Just (ndrop,_), name) = cdorigin cdef
         ps' <- cnvps ndrop ps
-        let con = I.ConHead name Cm.Inductive [] -- TODO: restore record fields!
+        let con = I.ConHead name I.IsData Cm.Inductive [] -- TODO: restore DataOrRecord and record fields!
         return (I.ConP con I.noConPatternInfo ps')
        CSPatExp e -> do
         e' <- convert e {- renm e -} -- renaming before adding to clause below
@@ -662,7 +657,9 @@ frommyClause (ids, pats, mrhs) = do
    , I.clauseBody  = body
    , I.clauseType  = Nothing -- TODO: compute clause type
    , I.clauseCatchall = False
+   , I.clauseRecursive   = Nothing -- TODO: Don't know here whether recursive or not !?
    , I.clauseUnreachable = Nothing -- TODO: Don't know here whether reachable or not !?
+   , I.clauseEllipsis = Cm.NoEllipsis
    }
 
 contains_constructor :: [CSPat O] -> Bool
@@ -714,7 +711,7 @@ findClauseDeep ii = ignoreAbstractMode $ do  -- Andreas, 2016-09-04, issue #2162
   MB.InteractionPoint { MB.ipClause = ipCl} <- lookupInteractionPoint ii
   case ipCl of
     MB.IPNoClause -> return Nothing
-    MB.IPClause f clauseNo _ _ _ _ -> do
+    MB.IPClause f clauseNo _ _ _ _ _ -> do
       (_, (_, c, _)) <- getClauseZipperForIP f clauseNo
       return $ Just (f, c, maybe __IMPOSSIBLE__ toplevel $ I.clauseBody c)
   where

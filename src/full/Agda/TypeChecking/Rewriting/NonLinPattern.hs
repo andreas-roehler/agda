@@ -19,10 +19,9 @@ import Agda.Syntax.Internal.Defs
 import Agda.TypeChecking.Datatypes
 import Agda.TypeChecking.Free
 import Agda.TypeChecking.Free.Lazy
-import Agda.TypeChecking.Irrelevance (workOnTypes)
+import Agda.TypeChecking.Irrelevance (workOnTypes, isPropM)
 import Agda.TypeChecking.Level
 import Agda.TypeChecking.Monad
-import Agda.TypeChecking.Monad.Builtin
 import Agda.TypeChecking.Pretty
 import Agda.TypeChecking.Records
 import Agda.TypeChecking.Reduce
@@ -62,7 +61,8 @@ instance PatternFrom (Type, Term) Elims [Elim' NLPat] where
       let hd' = hd `apply` [ u ]
       ps  <- patternFrom r k (t',hd') es
       return $ Apply p : ps
-    (IApply x y u : es) -> __IMPOSSIBLE__ -- TODO
+    (IApply x y u : es) -> typeError $ GenericError $
+      "Rewrite rules with cubical are not yet supported"
     (Proj o f : es) -> do
       ~(Just (El _ (Pi a b))) <- getDefType f =<< reduce t
       let t' = b `absApp` hd
@@ -84,9 +84,12 @@ instance PatternFrom () Sort NLPSort where
     case s of
       Type l   -> PType <$> patternFrom r k () l
       Prop l   -> PProp <$> patternFrom r k () l
-      Inf      -> return PInf
+      Inf f n  -> return $ PInf f n
+      SSet l   -> __IMPOSSIBLE__
       SizeUniv -> return PSizeUniv
+      LockUniv -> return PLockUniv
       PiSort _ _ -> __IMPOSSIBLE__
+      FunSort _ _ -> __IMPOSSIBLE__
       UnivSort _ -> __IMPOSSIBLE__
       MetaS{}  -> __IMPOSSIBLE__
       DefS{}   -> __IMPOSSIBLE__
@@ -104,9 +107,11 @@ instance PatternFrom () Level NLPat where
     patternFrom r k t v
 
 instance PatternFrom Type Term NLPat where
-  patternFrom r k t v = do
+  patternFrom r0 k t v = do
     t <- reduce t
     etaRecord <- isEtaRecordType t
+    prop <- isPropM t
+    let r = if prop then Irrelevant else r0
     v <- unLevel =<< reduce v
     reportSDoc "rewriting.build" 60 $ sep
       [ "building a pattern from term v = " <+> prettyTCM v
@@ -168,7 +173,7 @@ instance PatternFrom Type Term NLPat where
         return $ PPi pa (Abs (absName b) pb)
       (_ , Sort s)     -> PSort <$> patternFrom r k () s
       (_ , Level l)    -> __IMPOSSIBLE__
-      (_ , DontCare{}) -> done
+      (_ , DontCare{}) -> __IMPOSSIBLE__
       (_ , MetaV{})    -> __IMPOSSIBLE__
       (_ , Dummy s _)  -> __IMPOSSIBLE_VERBOSE__ s
 
@@ -215,8 +220,9 @@ instance NLPatToTerm NLPType Type where
 instance NLPatToTerm NLPSort Sort where
   nlPatToTerm (PType l) = Type <$> nlPatToTerm l
   nlPatToTerm (PProp l) = Prop <$> nlPatToTerm l
-  nlPatToTerm PInf      = return Inf
+  nlPatToTerm (PInf f n) = return $ Inf f n
   nlPatToTerm PSizeUniv = return SizeUniv
+  nlPatToTerm PLockUniv = return LockUniv
 
 -- | Gather the set of pattern variables of a non-linear pattern
 class NLPatVars a where
@@ -235,8 +241,9 @@ instance NLPatVars NLPSort where
   nlPatVarsUnder k = \case
     PType l   -> nlPatVarsUnder k l
     PProp l   -> nlPatVarsUnder k l
-    PInf      -> empty
+    PInf f n  -> empty
     PSizeUniv -> empty
+    PLockUniv -> empty
 
 instance NLPatVars NLPat where
   nlPatVarsUnder k = \case
@@ -290,8 +297,9 @@ instance GetMatchables NLPSort where
   getMatchables = \case
     PType l   -> getMatchables l
     PProp l   -> getMatchables l
-    PInf      -> empty
+    PInf f n  -> empty
     PSizeUniv -> empty
+    PLockUniv -> empty
 
 instance GetMatchables Term where
   getMatchables = getDefs' __IMPOSSIBLE__ singleton
@@ -314,7 +322,7 @@ instance Free NLPat where
 
 instance Free NLPType where
   freeVars' (NLPType s a) =
-    ifM ((IgnoreNot ==) <$> asks feIgnoreSorts)
+    ifM (asks ((IgnoreNot ==) . feIgnoreSorts))
       {- then -} (freeVars' (s, a))
       {- else -} (freeVars' a)
 
@@ -322,5 +330,6 @@ instance Free NLPSort where
   freeVars' = \case
     PType l   -> freeVars' l
     PProp l   -> freeVars' l
-    PInf      -> mempty
+    PInf f n  -> mempty
     PSizeUniv -> mempty
+    PLockUniv -> mempty

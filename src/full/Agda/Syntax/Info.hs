@@ -12,6 +12,7 @@ module Agda.Syntax.Info where
 import Prelude hiding (null)
 
 import Data.Data (Data)
+import Data.Semigroup (Semigroup)
 
 import qualified Agda.Syntax.Concrete.Name as C
 import Agda.Syntax.Common
@@ -20,7 +21,6 @@ import Agda.Syntax.Concrete
 import Agda.Syntax.Fixity
 import Agda.Syntax.Scope.Base (ScopeInfo, emptyScopeInfo)
 
-import Agda.Utils.Function
 import Agda.Utils.Functor
 import Agda.Utils.Null
 
@@ -74,7 +74,7 @@ instance KillRange ExprInfo where
 data AppInfo = AppInfo
   { appRange  :: Range
   , appOrigin :: Origin
-  , appParens :: ParenPreference -- ^ Do we prefer a appbda argument with or without parens?
+  , appParens :: ParenPreference -- ^ Do we prefer a lambda argument with or without parens?
   }
   deriving (Data, Show, Eq, Ord)
 
@@ -139,36 +139,38 @@ instance KillRange LetInfo where
     Definition information (declarations that actually define something)
  --------------------------------------------------------------------------}
 
-data DefInfo = DefInfo
+data DefInfo' t = DefInfo
   { defFixity   :: Fixity'
   , defAccess   :: Access
   , defAbstract :: IsAbstract
   , defInstance :: IsInstance
   , defMacro    :: IsMacro
   , defInfo     :: DeclInfo
+  , defTactic   :: Maybe t
   }
   deriving (Data, Show, Eq)
 
-mkDefInfo :: Name -> Fixity' -> Access -> IsAbstract -> Range -> DefInfo
-mkDefInfo x f a ab r = DefInfo f a ab NotInstanceDef NotMacroDef (DeclInfo x r)
+mkDefInfo :: Name -> Fixity' -> Access -> IsAbstract -> Range -> DefInfo' t
+mkDefInfo x f a ab r = mkDefInfoInstance x f a ab NotInstanceDef NotMacroDef r
 
 -- | Same as @mkDefInfo@ but where we can also give the @IsInstance@
-mkDefInfoInstance :: Name -> Fixity' -> Access -> IsAbstract -> IsInstance -> IsMacro -> Range -> DefInfo
-mkDefInfoInstance x f a ab i m r = DefInfo f a ab i m (DeclInfo x r)
+mkDefInfoInstance :: Name -> Fixity' -> Access -> IsAbstract -> IsInstance -> IsMacro -> Range -> DefInfo' t
+mkDefInfoInstance x f a ab i m r = DefInfo f a ab i m (DeclInfo x r) Nothing
 
-instance HasRange DefInfo where
+instance HasRange (DefInfo' t) where
   getRange = getRange . defInfo
 
-instance SetRange DefInfo where
+instance SetRange (DefInfo' t) where
   setRange r i = i { defInfo = setRange r (defInfo i) }
 
-instance KillRange DefInfo where
-  killRange i = i { defInfo = killRange $ defInfo i }
+instance KillRange t => KillRange (DefInfo' t) where
+  killRange i = i { defInfo   = killRange $ defInfo i,
+                    defTactic = killRange $ defTactic i }
 
-instance LensIsAbstract DefInfo where
+instance LensIsAbstract (DefInfo' t) where
   lensIsAbstract f i = (f $! defAbstract i) <&> \ a -> i { defAbstract = a }
 
-instance AnyIsAbstract DefInfo where
+instance AnyIsAbstract (DefInfo' t) where
   anyIsAbstract = defAbstract
 
 
@@ -217,14 +219,20 @@ instance KillRange MutualInfo where
     Left hand side information
  --------------------------------------------------------------------------}
 
-newtype LHSInfo = LHSRange Range
-  deriving (Data, Show, Eq, Null)
+data LHSInfo = LHSInfo
+  { lhsRange    :: Range
+  , lhsEllipsis :: ExpandedEllipsis
+  } deriving (Data, Show, Eq)
 
 instance HasRange LHSInfo where
-  getRange (LHSRange r) = r
+  getRange (LHSInfo r _) = r
 
 instance KillRange LHSInfo where
-  killRange (LHSRange r) = LHSRange noRange
+  killRange (LHSInfo r ell) = LHSInfo noRange ell
+
+instance Null LHSInfo where
+  null i = null (lhsRange i) && null (lhsEllipsis i)
+  empty  = LHSInfo empty empty
 
 {--------------------------------------------------------------------------
     Pattern information
@@ -233,7 +241,7 @@ instance KillRange LHSInfo where
 -- | For a general pattern we remember the source code position.
 newtype PatInfo
   = PatRange Range
-  deriving (Data, Eq, Null, Show, SetRange, HasRange, KillRange)
+  deriving (Data, Eq, Null, Semigroup, Monoid, Show, SetRange, HasRange, KillRange)
 
 -- | Empty range for patterns.
 patNoRange :: PatInfo

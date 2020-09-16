@@ -1,6 +1,8 @@
 module Agda.TypeChecking.Primitive.Base where
 
+-- Control.Monad.Fail import is redundant since GHC 8.8.1
 import Control.Monad.Fail (MonadFail)
+
 import qualified Data.Map as Map
 
 import Agda.Syntax.Common
@@ -12,6 +14,7 @@ import Agda.TypeChecking.Monad.Context
 import Agda.TypeChecking.Monad.Debug
 import Agda.TypeChecking.Names
 import {-# SOURCE #-} Agda.TypeChecking.Primitive
+import Agda.TypeChecking.Pretty
 import Agda.TypeChecking.Reduce ( reduce )
 import Agda.TypeChecking.Monad.Signature
 import Agda.TypeChecking.Substitute
@@ -36,7 +39,7 @@ garr :: Monad m => (Relevance -> Relevance) -> m Type -> m Type -> m Type
 garr f a b = do
   a' <- a
   b' <- b
-  return $ El (funSort (defaultDom a') (getSort b')) $
+  return $ El (funSort (getSort a') (getSort b')) $
     Pi (mapRelevance f $ defaultDom a') (NoAbs "_" b')
 
 gpi :: (MonadAddContext m, MonadDebug m)
@@ -62,7 +65,7 @@ nPi' s a b = nPi s a (bind' s b)
 
 pPi' :: (MonadAddContext m, HasBuiltins m, MonadDebug m)
      => String -> NamesT m Term -> (NamesT m Term -> NamesT m Type) -> NamesT m Type
-pPi' n phi b = toFinitePi <$> nPi' n (elInf $ cl isOne <@> phi) b
+pPi' n phi b = toFinitePi <$> nPi' n (elSSet $ cl isOne <@> phi) b
  where
    toFinitePi :: Type -> Type
    toFinitePi (El s (Pi d b)) = El s $ Pi (setRelevance Irrelevant $ d { domFinite = True }) b
@@ -73,8 +76,14 @@ pPi' n phi b = toFinitePi <$> nPi' n (elInf $ cl isOne <@> phi) b
 el' :: Monad m => m Term -> m Term -> m Type
 el' l a = El <$> (tmSort <$> l) <*> a
 
+el's :: Monad m => m Term -> m Term -> m Type
+el's l a = El <$> (SSet . atomicLevel <$> l) <*> a
+
 elInf :: Functor m => m Term -> m Type
-elInf t = (El Inf <$> t)
+elInf t = (El (Inf IsFibrant 0) <$> t)
+
+elSSet :: Functor m => m Term -> m Type
+elSSet t = (El (SSet $ ClosedLevel 0) <$> t)
 
 nolam :: Term -> Term
 nolam = Lam defaultArgInfo . NoAbs "_"
@@ -108,6 +117,9 @@ t <@@> (x,y,r) = do
 
 list :: TCM Term -> TCM Term
 list t = primList <@> t
+
+tMaybe :: TCM Term -> TCM Term
+tMaybe t = primMaybe <@> t
 
 io :: TCM Term -> TCM Term
 io t = primIO <@> t
@@ -156,13 +168,14 @@ domH = setHiding Hidden . defaultDom
 
 lookupPrimitiveFunction :: String -> TCM PrimitiveImpl
 lookupPrimitiveFunction x =
-  fromMaybe (typeError $ NoSuchPrimitiveFunction x)
+  fromMaybe (do
+                reportSDoc "tc.prim" 20 $ "Lookup of primitive function" <+> text x <+> "failed"
+                typeError $ NoSuchPrimitiveFunction x)
             (Map.lookup x primitiveFunctions)
 
 lookupPrimitiveFunctionQ :: QName -> TCM (String, PrimitiveImpl)
 lookupPrimitiveFunctionQ q = do
-  let s = case qnameName q of
-            Name _ x _ _ _ -> prettyShow x
+  let s = prettyShow (nameCanonical $ qnameName q)
   PrimImpl t pf <- lookupPrimitiveFunction s
   return (s, PrimImpl t $ pf { primFunName = q })
 
@@ -205,7 +218,7 @@ getSigmaKit = do
           return . Just $ SigmaKit
             { sigmaName = sigma
             , sigmaCon  = con
-            , sigmaFst  = unArg fst
-            , sigmaSnd  = unArg snd
+            , sigmaFst  = unDom fst
+            , sigmaSnd  = unDom snd
             }
         _ -> __IMPOSSIBLE__

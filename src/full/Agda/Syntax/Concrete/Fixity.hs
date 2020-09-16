@@ -8,6 +8,8 @@ module Agda.Syntax.Concrete.Fixity
   ) where
 
 import Prelude hiding (null)
+import GHC.Stack (HasCallStack)
+
 import Control.Monad
 import Data.Map (Map)
 import qualified Data.Map as Map
@@ -17,15 +19,14 @@ import qualified Data.Set as Set
 import Data.Semigroup
 #endif
 
-import Agda.Syntax.Builtin (builtinsNoDef)
+import Agda.Syntax.Builtin (isBuiltinNoDef)
 import Agda.Syntax.Common
 import Agda.Syntax.Concrete
-import Agda.Syntax.Fixity
-import Agda.Syntax.Notation
 import Agda.Syntax.Position
 import Agda.TypeChecking.Positivity.Occurrence (Occurrence)
 
 import Agda.Utils.Functor
+import qualified Agda.Utils.List1 as List1
 import Agda.Utils.Null
 import Agda.Utils.Impossible
 
@@ -36,10 +37,10 @@ type Polarities = Map Name [Occurrence]
 class Monad m => MonadFixityError m where
   throwMultipleFixityDecls            :: [(Name, [Fixity'])] -> m a
   throwMultiplePolarityPragmas        :: [Name] -> m a
-  warnUnknownNamesInFixityDecl        :: [Name] -> m ()
-  warnUnknownNamesInPolarityPragmas   :: [Name] -> m ()
-  warnUnknownFixityInMixfixDecl       :: [Name] -> m ()
-  warnPolarityPragmasButNotPostulates :: [Name] -> m ()
+  warnUnknownNamesInFixityDecl        :: HasCallStack => [Name] -> m ()
+  warnUnknownNamesInPolarityPragmas   :: HasCallStack => [Name] -> m ()
+  warnUnknownFixityInMixfixDecl       :: HasCallStack => [Name] -> m ()
+  warnPolarityPragmasButNotPostulates :: HasCallStack => [Name] -> m ()
 
 -- | Add more fixities. Throw an exception for multiple fixity declarations.
 --   OR:  Disjoint union of fixity maps.  Throws exception if not disjoint.
@@ -141,12 +142,12 @@ fixitiesAndPolarities doWarn ds = do
   return (fixs, pols)
 
 fixitiesAndPolarities' :: MonadFixityError m => [Declaration] -> MonadicFixPol m
-fixitiesAndPolarities' = foldMap $ \ d -> case d of
+fixitiesAndPolarities' = foldMap $ \case
   -- These declarations define polarities:
   Pragma (PolarityPragma _ x occs) -> returnPol $ Map.singleton x occs
   -- These declarations define fixities:
   Syntax x syn    -> returnFix $ Map.singleton x (Fixity' noFixity syn $ getRange x)
-  Infix  f xs     -> returnFix $ Map.fromList $ for xs $ \ x -> (x, Fixity' f noNotation $ getRange x)
+  Infix  f xs     -> returnFix $ Map.fromList $ for (List1.toList xs) $ \ x -> (x, Fixity' f noNotation $ getRange x)
   -- We look into these blocks:
   Mutual    _ ds' -> fixitiesAndPolarities' ds'
   Abstract  _ ds' -> fixitiesAndPolarities' ds'
@@ -204,19 +205,19 @@ declaresName x = declaresNames [x]
 --   i.e., do not go into modules.
 declaredNames :: Declaration -> DeclaredNames
 declaredNames d = case d of
-  TypeSig _ x _        -> declaresName x
-  FieldSig _ x _       -> declaresName x
+  TypeSig _ _ x _      -> declaresName x
+  FieldSig _ _ x _     -> declaresName x
   Field _ fs           -> foldMap declaredNames fs
-  FunClause (LHS p [] []) _ _ _
-    | IdentP (QName x) <- removeSingletonRawAppP p
+  FunClause (LHS p [] [] _) _ _ _
+    | IdentP (QName x) <- removeParenP p
                        -> declaresName x
   FunClause{}          -> mempty
-  DataSig _ _ x _ _    -> declaresName x
-  DataDef _ _ _ _ cs   -> foldMap declaredNames cs
-  Data _ _ x _ _ cs    -> declaresName x <> foldMap declaredNames cs
+  DataSig _ x _ _      -> declaresName x
+  DataDef _ _ _ cs     -> foldMap declaredNames cs
+  Data _ x _ _ cs      -> declaresName x <> foldMap declaredNames cs
   RecordSig _ x _ _    -> declaresName x
-  RecordDef _ x _ _ c _ _ -> declaresNames $     foldMap (:[]) (fst <$> c)
-  Record _ x _ _ c _ _ _  -> declaresNames $ x : foldMap (:[]) (fst <$> c)
+  RecordDef _ x _ _ _ c _ _ -> declaresNames $     foldMap (:[]) (fst <$> c)
+  Record _ x _ _ _ c _ _ _  -> declaresNames $ x : foldMap (:[]) (fst <$> c)
   Infix _ _            -> mempty
   Syntax _ _           -> mempty
   PatternSyn _ x _ _   -> declaresName x
@@ -237,5 +238,5 @@ declaredNames d = case d of
   -- BUILTIN pragmas which do not require an accompanying definition declare
   -- the (unqualified) name they mention.
   Pragma (BuiltinPragma _ b (QName x))
-    | b `elem` builtinsNoDef -> declaresName x
+    | isBuiltinNoDef $ rangedThing b -> declaresName x
   Pragma{}             -> mempty

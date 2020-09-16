@@ -1,4 +1,5 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE TypeFamilies #-}
 
 module Agda.Utils.Update
   ( ChangeT
@@ -17,13 +18,17 @@ module Agda.Utils.Update
   , Updater2(..)
   ) where
 
+-- Control.Monad.Fail import is redundant since GHC 8.8.1
 import Control.Monad.Fail (MonadFail)
+
 import Control.Monad.Identity
 import Control.Monad.Trans
+import Control.Monad.Trans.Control
+-- NB: Control.Monad.Trans.Identity is already exported by Control.Monad.Identity
+-- since version mtl 2.2.2, but this needs at least ghc 8.2.2
 import Control.Monad.Trans.Identity
 import Control.Monad.Writer.Strict
 
-import Data.Traversable (Traversable(..), traverse)
 
 import Agda.Utils.Tuple
 
@@ -38,6 +43,17 @@ class Monad m => MonadChange m where
 newtype ChangeT m a = ChangeT { fromChangeT :: WriterT Any m a }
   deriving (Functor, Applicative, Monad, MonadTrans, MonadFail, MonadIO)
 
+-- This instance cannot be derived in older ghcs like 8.0
+-- because of the associated type synonym.
+-- 8.4 can derive it, but needs UndecidableInstances.
+instance MonadTransControl ChangeT where
+  type StT ChangeT a = (a, Any) -- StT (WriterT Any) a  would require UndecidableInstances
+  liftWith f = ChangeT $ liftWith $ \ runWriterT -> f $ runWriterT . fromChangeT
+  -- Andreas, 2020-04-17: these point-free variants do not seem to type check:
+  -- liftWith f = ChangeT $ liftWith $ f . (. fromChangeT)
+  -- liftWith = ChangeT . liftWith . (. (. fromChangeT))
+  restoreT = ChangeT . restoreT
+
 instance Monad m => MonadChange (ChangeT m) where
   tellDirty     = ChangeT $ tell $ Any True
   listenDirty m = ChangeT $ do
@@ -49,7 +65,7 @@ runChangeT :: Functor m => ChangeT m a -> m (a, Bool)
 runChangeT = fmap (mapSnd getAny) . runWriterT . fromChangeT
 
 -- | Run a 'ChangeT' computation, but ignore change flag.
-execChangeT :: Functor m => ChangeT m a -> m a
+execChangeT :: Functor m => ChangeT m a -> m a -- A library function, so keep
 execChangeT = fmap fst . runChangeT
 
 -- | Map a 'ChangeT' computation (monad transformer action).
@@ -79,6 +95,7 @@ type EndoFun a = a -> a
 type Change  a = ChangeT Identity a
 type Updater a = UpdaterT Identity a
 
+-- NB:: Defined but not used
 fromChange :: Change a -> Writer Any a
 fromChange = fromChangeT
 

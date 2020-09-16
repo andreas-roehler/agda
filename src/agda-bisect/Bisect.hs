@@ -66,7 +66,6 @@ data Options = Options
   , compiler                  :: Maybe String
   , defaultCabalOptions       :: Bool
   , cabalOptions              :: [String]
-  , simpleSetup               :: Bool
   , skipStrings               :: [String]
   , onlyOnBranches            :: [String]
   , skipBranches              :: [String]
@@ -83,14 +82,14 @@ data Options = Options
 
 options :: IO Options
 options =
-  execParser
-    (info (helper <*> (fixOptions <$> opts))
+  execParser $
+     info (helper <*> (fixOptions <$> opts))
           (header "Git bisect wrapper script for the Agda code base" <>
-           footerDoc (Just msg)))
+           footerDoc (Just msg))
   where
   opts = Options
     <$> (not <$>
-         (switch $
+         switch (
             long "must-fail" <>
             help "The command must fail (by default it must succeed)"))
     <*> many
@@ -108,7 +107,7 @@ options =
              , show internalErrorString ++ ";"
              , "implies --must-fail"
              ]))
-    <*> (optional $
+    <*> optional (
            option
              (do n <- auto
                  if n < 0 || n > maxBound then
@@ -142,12 +141,6 @@ options =
               metavar "OPTION" <>
               completer (commandCompleter "cabal"
                            ["v1-install", "--list-options"])))
-    <*> switch (long "simple-setup" <>
-                help (unwords
-                     [ "Replace Setup.hs by a default Setup.hs before running cabal."
-                     , "This has the effect of skipping the compilation"
-                     , "of the builtin Agda library files."
-                     ]))
     <*> ((\skip -> if skip then ciSkipStrings else []) <$>
          switch (long "skip-skipped" <>
                  help ("Skip commits with commit messages " ++
@@ -171,7 +164,7 @@ options =
                       help "Store a git bisect log in FILE" <>
                       metavar "FILE" <>
                       action "file"))
-    <*> (((\b g -> Right (b, g)) <$>
+    <*> ((curry Right <$>
           strOption (long "bad" <>
                      metavar "BAD" <>
                      help "Bad commit" <>
@@ -205,7 +198,7 @@ options =
           many (strArgument (metavar "ARGUMENTS..." <>
                              help "The arguments supplied to Agda")))
            <|>
-         ((\prog args -> Left (prog, args)) <$>
+         (curry Left <$>
           strOption (long "script" <>
                      metavar "PROGRAM" <>
                      help ("Do not invoke Agda directly, run " ++
@@ -592,7 +585,7 @@ installAgda :: Options -> IO (Maybe FilePath)
 installAgda opts
   | cacheBuilds opts = do
       commit <- currentCommit
-      agdas  <- forM (True : if timeout opts then [] else [False])
+      agdas  <- forM (True : [False | not (timeout opts)])
                      (\timeout -> do
                        agda <- cachedAgda commit timeout
                        b    <- doesFileExist agda
@@ -625,33 +618,24 @@ installAgda opts
 
 cabalInstall :: Options -> FilePath -> IO (Maybe FilePath)
 cabalInstall opts file = do
-  when (simpleSetup opts) $ replaceSetupHsBySimpleSetup
   commit <- currentCommit
-  ok <- callProcessWithResult "cabal" $
-    [ "v1-install"
-    , "--force-reinstalls"
-    , "--disable-library-profiling"
-    , "--disable-documentation"
-    ] ++ (if cacheBuilds opts then ["--program-suffix=" ++
-                                    programSuffix commit (timeout opts)]
-                              else [])
-      ++ compilerFlag opts
-      ++ cabalOptions opts ++
-    [ file
-    ]
+  ok     <- callProcessWithResult "cabal" $ concat
+     [ [ "v1-install"
+       , "--force-reinstalls"
+       , "--disable-library-profiling"
+       , "--disable-documentation"
+       ]
+     , [ "--program-suffix=" ++ programSuffix commit (timeout opts)
+       | cacheBuilds opts
+       ]
+     , compilerFlag opts
+     , cabalOptions opts
+     , [file]
+     ]
   case (ok, cacheBuilds opts) of
-    (True, False) -> Just <$> compiledAgda
-    (True, True)  -> Just <$> cachedAgda commit (timeout opts)
-    (False, _)    -> return Nothing
-
--- | Replace the @Setup.hs@ script by a default script.
---   This should prevent the compilation of the Agda library files.
-replaceSetupHsBySimpleSetup :: IO ()
-replaceSetupHsBySimpleSetup = do
-  writeFile "Setup.hs" $ unlines
-    [ "import Distribution.Simple"
-    , "main = defaultMain"
-    ]
+    (True , False) -> Just <$> compiledAgda
+    (True , True ) -> Just <$> cachedAgda commit (timeout opts)
+    (False, _    ) -> return Nothing
 
 -- | Tries to copy data files to the correct location.
 --
@@ -661,7 +645,7 @@ replaceSetupHsBySimpleSetup = do
 
 copyDataFiles :: Options -> IO ()
 copyDataFiles opts = do
-  callProcessWithResult "cabal" (["v1-configure"] ++ compilerFlag opts)
+  callProcessWithResult "cabal" ("v1-configure" : compilerFlag opts)
   callProcessWithResult "cabal" ["v1-copy", "-v"]
   return ()
 
@@ -710,6 +694,10 @@ makeBuildEasier =
         , "-e", "s/geniplate[^,]*/geniplate-mirror/"
         , "-e", "s/-Werror(=.*)?//g"
         , cabalFile
+        ]
+      writeFile "Setup.hs" $ unlines
+        [ "import Distribution.Simple"
+        , "main = defaultMain"
         ]
       return ()
   , callProcess "git" ["reset", "--hard"]

@@ -1,16 +1,15 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# OPTIONS_GHC -fno-warn-orphans #-}
+{-# LANGUAGE TypeFamilies               #-}
+{-# OPTIONS_GHC -fno-warn-orphans       #-}
 
 module Agda.Compiler.Treeless.Subst where
 
 import qualified Data.Map as Map
 import Data.Map (Map)
 import Data.Maybe
-import Data.Monoid ( Monoid, mempty, mappend )
 import Data.Semigroup ( Semigroup, (<>), All(..), Any(..) )
 
 import Agda.Syntax.Treeless
-import Agda.Syntax.Internal (Substitution'(..))
 import Agda.TypeChecking.Substitute
 
 import Agda.Utils.Impossible
@@ -20,7 +19,9 @@ instance DeBruijn TTerm where
   deBruijnView (TVar i) = Just i
   deBruijnView _ = Nothing
 
-instance Subst TTerm TTerm where
+instance Subst TTerm where
+  type SubstArg TTerm = TTerm
+
   applySubst IdS t = t
   applySubst rho t = case t of
       TDef{}    -> t
@@ -45,7 +46,8 @@ instance Subst TTerm TTerm where
       tApp (TPrim PSeq) [TErased, b] = b
       tApp f ts = TApp f ts
 
-instance Subst TTerm TAlt where
+instance Subst TAlt where
+  type SubstArg TAlt = TTerm
   applySubst rho (TACon c i b) = TACon c i (applySubst (liftS i rho) b)
   applySubst rho (TALit l b)   = TALit l (applySubst rho b)
   applySubst rho (TAGuard g b) = TAGuard (applySubst rho g) (applySubst rho b)
@@ -134,7 +136,7 @@ instance HasFree TAlt where
     TAGuard g b -> freeVars (g, b)
 
 -- | Strenghtening.
-tryStrengthen :: (HasFree a, Subst t a) => Int -> a -> Maybe a
+tryStrengthen :: (HasFree a, Subst a) => Int -> a -> Maybe a
 tryStrengthen n t =
   case Map.minViewWithKey (freeVars t) of
     Just ((i, _), _) | i < n -> Nothing

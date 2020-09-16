@@ -1,3 +1,5 @@
+{-# LANGUAGE TypeFamilies #-}
+
 -- | Free variable check that reduces the subject to make certain variables not
 --   free. Used when pruning metavariables in Agda.TypeChecking.MetaVars.Occurs.
 module Agda.TypeChecking.Free.Reduce
@@ -13,7 +15,6 @@ import qualified Data.IntMap as IntMap
 import Data.IntMap (IntMap)
 import qualified Data.IntSet as IntSet
 import Data.IntSet (IntSet)
-import Data.Traversable (traverse)
 
 import Agda.Syntax.Common
 import Agda.Syntax.Internal
@@ -51,7 +52,7 @@ type MonadFreeRed m =
   , MonadReduce m
   )
 
-class (PrecomputeFreeVars a, Subst Term a) => ForceNotFree a where
+class (PrecomputeFreeVars a, Subst a) => ForceNotFree a where
   -- Reduce the argument if necessary, to make as many as possible of
   -- the variables in the state not free. Updates the state, marking
   -- the variables that couldn't be make not free as `MaybeFree`. By
@@ -62,7 +63,7 @@ class (PrecomputeFreeVars a, Subst Term a) => ForceNotFree a where
 -- Return the set of variables for which there is still hope that they
 -- may not occur.
 varsToForceNotFree :: (MonadFreeRed m) => m IntSet
-varsToForceNotFree = IntMap.keysSet . (IntMap.filter (== NotFree)) <$> get
+varsToForceNotFree = gets (IntMap.keysSet . (IntMap.filter (== NotFree)))
 
 -- Reduce the argument if there are offending free variables. Doesn't call the
 -- continuation when no reduction is required.
@@ -72,8 +73,9 @@ reduceIfFreeVars k a = do
   xs <- varsToForceNotFree
   let fvs     = precomputedFreeVars a
       notfree = IntSet.null $ IntSet.intersection xs fvs
-  if | notfree   -> return a
-     | otherwise -> k . precomputeFreeVars_ =<< reduce a
+  if notfree
+    then return a
+    else k . precomputeFreeVars_ =<< reduce a
 
 -- Careful not to define forceNotFree' = forceNotFreeR since that would loop.
 forceNotFreeR :: (Reduce a, ForceNotFree a, MonadFreeRed m)
@@ -85,7 +87,7 @@ instance (Reduce a, ForceNotFree a) => ForceNotFree (Arg a) where
   -- traverse.
   forceNotFree' = reduceIfFreeVars (traverse forceNotFree')
 
-instance (Reduce a, ForceNotFree a) => ForceNotFree (Dom a) where
+instance (Reduce a, ForceNotFree a, TermSubst a) => ForceNotFree (Dom a) where
   forceNotFree' = traverse forceNotFreeR
 
 instance (Reduce a, ForceNotFree a) => ForceNotFree (Abs a) where
@@ -135,24 +137,19 @@ instance ForceNotFree Level where
 instance ForceNotFree PlusLevel where
   forceNotFree' (Plus k a) = Plus k <$> forceNotFree' a
 
-instance ForceNotFree LevelAtom where
-  forceNotFree' l = case l of
-    MetaLevel x es   -> local (insertMetaSet x) $
-                        MetaLevel x    <$> forceNotFree' es
-    BlockedLevel x t -> BlockedLevel x <$> forceNotFree' t
-    NeutralLevel b t -> NeutralLevel b <$> forceNotFree' t
-    UnreducedLevel t -> UnreducedLevel <$> forceNotFreeR t  -- Already reduce in the cases above
-
 instance ForceNotFree Sort where
   -- Reduce for sorts already goes under all sort constructors, so we can get
   -- away without forceNotFreeR here.
   forceNotFree' s = case s of
     Type l     -> Type     <$> forceNotFree' l
     Prop l     -> Prop     <$> forceNotFree' l
+    SSet l     -> SSet     <$> forceNotFree' l
     PiSort a b -> PiSort   <$> forceNotFree' a <*> forceNotFree' b
+    FunSort a b -> FunSort <$> forceNotFree' a <*> forceNotFree' b
     UnivSort s -> UnivSort <$> forceNotFree' s
     MetaS x es -> MetaS x  <$> forceNotFree' es
     DefS d es  -> DefS d   <$> forceNotFree' es
-    Inf        -> return s
+    Inf _ _    -> return s
     SizeUniv   -> return s
+    LockUniv   -> return s
     DummyS{}   -> return s

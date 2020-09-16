@@ -37,7 +37,6 @@ import Agda.Interaction.Options
 
 import Agda.Utils.Either
 import Agda.Utils.Functor
-import Agda.Utils.Maybe
 import Agda.Utils.Permutation hiding (dropFrom)
 import Agda.Utils.Pretty (Pretty(..))
 import qualified Agda.Utils.Pretty as P
@@ -59,7 +58,7 @@ import Agda.Utils.Impossible
 recordPatternToProjections :: DeBruijnPattern -> TCM [Term -> Term]
 recordPatternToProjections p =
   case p of
-    VarP{}       -> return [ \ x -> x ]
+    VarP{}       -> return [ id ]
     LitP{}       -> typeError $ ShouldBeRecordPattern p
     DotP{}       -> typeError $ ShouldBeRecordPattern p
     ConP c ci ps -> do
@@ -77,7 +76,7 @@ recordPatternToProjections p =
     IApplyP{}    -> typeError $ ShouldBeRecordPattern p
     DefP{}       -> typeError $ ShouldBeRecordPattern p
   where
-    proj p = (`applyE` [Proj ProjSystem $ unArg p])
+    proj p = (`applyE` [Proj ProjSystem $ unDom p])
     comb :: (Term -> Term) -> DeBruijnPattern -> TCM [Term -> Term]
     comb prj p = map (\ f -> f . prj) <$> recordPatternToProjections p
 
@@ -123,14 +122,14 @@ getEtaAndArity :: SplitTag -> TCM (Bool, Nat)
 getEtaAndArity (SplitCon c) =
   for (getConstructorInfo c) $ \case
     DataCon n        -> (False, n)
-    RecordCon eta fs -> (eta == YesEta, size fs)
+    RecordCon _ eta fs -> (eta == YesEta, size fs)
 getEtaAndArity (SplitLit l) = return (False, 0)
 getEtaAndArity SplitCatchall = return (False, 1)
 
 translateCompiledClauses
   :: forall m. (HasConstInfo m, MonadChange m)
   => CompiledClauses -> m CompiledClauses
-translateCompiledClauses cc = do
+translateCompiledClauses cc = ignoreAbstractMode $ do
   reportSDoc "tc.cc.record" 20 $ vcat
     [ "translate record patterns in compiled clauses"
     , nest 2 $ return $ pretty cc
@@ -169,18 +168,17 @@ translateCompiledClauses cc = do
       litMap   <- traverse loop litMap
       (conMap, eta) <- do
         let noEtaCase = (, Nothing) <$> (traverse . traverse) loop conMap
-            yesEtaCase ch b = (Map.empty,) . Just . (ch,) <$> traverse loop b
+            yesEtaCase b ch = (Map.empty,) . Just . (ch,) <$> traverse loop b
         case Map.toList conMap of
               -- This is already an eta match. Still need to recurse though.
               -- This can happen (#2981) when we
               -- 'revisitRecordPatternTranslation' in Rules.Decl, due to
               -- inferred eta.
-          _ | Just (ch, b) <- eta -> yesEtaCase ch b
+          _ | Just (ch, b) <- eta -> yesEtaCase b ch
           [(c, b)] | not comatch -> -- possible eta-match
             getConstructorInfo c >>= \ case
-              RecordCon YesEta fs ->
-                let ch = ConHead c Inductive fs in
-                yesEtaCase ch b
+              RecordCon pm YesEta fs -> yesEtaCase b $
+                ConHead c (IsRecord pm) Inductive (map argFromDom fs)
               _ -> noEtaCase
           _ -> noEtaCase
       return $ Case i cs{ conBranches    = conMap
@@ -220,7 +218,7 @@ recordExpressionsToCopatterns = \case
       Constructor{ conArity = ar } <- theDef <$> getConstInfo (conName c)
       irrProj <- optIrrelevantProjections <$> pragmaOptions
       getConstructorInfo (conName c) >>= \ case
-        RecordCon YesEta fs
+        RecordCon CopatternMatching YesEta fs
           | ar <- length fs, ar > 0,                   -- only for eta-records with at least one field
             length vs == ar,                           -- where the constructor application is saturated
             irrProj || not (any isIrrelevant fs) -> do -- and irrelevant projections (if any) are allowed
@@ -230,7 +228,7 @@ recordExpressionsToCopatterns = \case
                 traverse recordExpressionsToCopatterns $ Branches
                   { projPatterns   = True
                   , conBranches    = Map.fromList $
-                      zipWith (\ f v -> (unArg f, WithArity 0 $ Done xs v)) fs vs
+                      zipWith (\ f v -> (unDom f, WithArity 0 $ Done xs v)) fs vs
                   , etaBranch      = Nothing
                   , litBranches    = Map.empty
                   , catchAllBranch = Nothing
@@ -400,7 +398,7 @@ translateSplitTree t = snd <$> loop t
       -- invariant: if record constructor, then exactly one constructor
       if x then unless (rs == [True]) __IMPOSSIBLE__
       -- else no record constructor
-       else unless (or rs == False) __IMPOSSIBLE__
+       else when (or rs) __IMPOSSIBLE__
       return (x, conjColumns xss, ts)
 
 -- | @dropFrom i n@ drops arguments @j@  with @j < i + n@ and @j >= i@.
@@ -472,7 +470,7 @@ translateRecordPatterns clause = do
 
       -- Substitution used to convert terms in the old RHS's
       -- context to terms in the new RHS's context.
-      rhsSubst = mkSub s'
+      rhsSubst = mkSub s' -- NB:: Defined but not used
 
       -- Substitution used to convert terms in the old telescope's
       -- context to terms in the new RHS's context.
@@ -562,7 +560,7 @@ translateRecordPatterns clause = do
         ]
 
   reportSDoc "tc.lhs.recpat" 10 $
-    escapeContext (size $ clauseTel clause) $ vcat
+    escapeContext __IMPOSSIBLE__ (size $ clauseTel clause) $ vcat
       [ "Translated clause:"
       , nest 2 $ vcat
         [ "delta =" <+> prettyTCM (clauseTel c)
@@ -770,7 +768,7 @@ recordTree p@(ConP c ci ps) | conPRecord ci , PatOSystem <- patOrigin (conPInfo 
       -- The content of an @Arg@ might not be reduced (if @Arg@ is @Irrelevant@).
       fields <- getRecordTypeFields =<< reduce (unArg t)
 --      let proj p = \x -> Def (unArg p) [defaultArg x]
-      let proj p = (`applyE` [Proj ProjSystem $ unArg p])
+      let proj p = (`applyE` [Proj ProjSystem $ unDom p])
       return $ Right $ RecCon t $ zip (map proj fields) ts
 recordTree p@(ConP _ ci _) = return $ Left $ translatePattern p
 recordTree p@DefP{} = return $ Left $ translatePattern p

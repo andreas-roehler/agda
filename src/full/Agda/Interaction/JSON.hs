@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP               #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Encoding stuff into JSON values in TCM
@@ -10,7 +11,7 @@ module Agda.Interaction.JSON
   -- , ToRep(..), rep
   ) where
 
-import Control.Monad ((>=>), (<=<), sequence, liftM2)
+import Control.Monad ((>=>), (<=<))
 import Data.Aeson
 import Data.Aeson.Types (Pair)
 import Data.Text (Text)
@@ -22,7 +23,6 @@ import GHC.Int (Int32)
 -- import qualified Agda.Syntax.Concrete as C
 -- import qualified Agda.Syntax.Internal as I
 import Agda.TypeChecking.Monad
-import Agda.TypeChecking.Pretty (PrettyTCM(..))
 import Agda.Utils.Pretty
 import qualified Agda.Utils.FileName as File
 import qualified Agda.Utils.Maybe.Strict as Strict
@@ -120,6 +120,8 @@ instance EncodeTCM a => EncodeTCM (Maybe a) where
 instance ToJSON File.AbsolutePath where
   toJSON (File.AbsolutePath path) = toJSON path
 
+#if !(MIN_VERSION_aeson(1,5,3))
 instance ToJSON a => ToJSON (Strict.Maybe a) where
   toJSON (Strict.Just a) = toJSON a
   toJSON Strict.Nothing  = Null
+#endif

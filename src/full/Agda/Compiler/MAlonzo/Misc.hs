@@ -2,6 +2,8 @@
 module Agda.Compiler.MAlonzo.Misc where
 
 import Data.Char
+import Data.Text (Text)
+import qualified Data.Text as T
 
 import qualified Agda.Utils.Haskell.Syntax as HS
 
@@ -11,7 +13,6 @@ import Agda.Syntax.Common
 import Agda.Syntax.Internal
 
 import Agda.TypeChecking.Monad
-import Agda.TypeChecking.Monad.Builtin
 
 import Agda.Utils.Pretty
 
@@ -180,15 +181,18 @@ mazAnyType = HS.TyCon (hsName mazAnyTypeName)
 mazRTE :: HS.ModuleName
 mazRTE = HS.ModuleName "MAlonzo.RTE"
 
+mazRTEFloat :: HS.ModuleName
+mazRTEFloat = HS.ModuleName "MAlonzo.RTE.Float"
+
 rtmQual :: String -> HS.QName
 rtmQual = HS.UnQual . HS.Ident
 
 rtmVar :: String -> HS.Exp
 rtmVar  = HS.Var . rtmQual
 
-rtmError :: String -> HS.Exp
+rtmError :: Text -> HS.Exp
 rtmError s = rtmVar "error" `HS.App`
-             (HS.Lit $ HS.String $ "MAlonzo Runtime Error: " ++ s)
+             HS.Lit (HS.String $ T.append "MAlonzo Runtime Error: " s)
 
 unsafeCoerceMod :: HS.ModuleName
 unsafeCoerceMod = HS.ModuleName "Unsafe.Coerce"

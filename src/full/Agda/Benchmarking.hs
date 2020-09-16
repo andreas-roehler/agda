@@ -1,3 +1,4 @@
+{-# LANGUAGE TypeFamilies         #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
 -- | Agda-specific benchmarking structure.
@@ -60,6 +61,8 @@ data Phase
     -- ^ Subphase for 'Termination'.
   | ModuleName
     -- ^ Subphase for 'Import'.
+  | Compaction
+    -- ^ Subphase for 'Deserialization': compacting interfaces.
   | BuildInterface
     -- ^ Subphase for 'Serialization'.
   | Sort
@@ -124,7 +127,8 @@ isInternalAccount _                  = True
 benchmarks :: IORef Benchmark
 benchmarks = unsafePerformIO $ newIORef empty
 
-instance MonadBench Phase IO where
+instance MonadBench IO where
+  type BenchPhase IO = Phase
   getBenchmark = readIORef benchmarks
   putBenchmark = writeIORef benchmarks
   finally = E.finally

@@ -1,5 +1,4 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE UndecidableInstances       #-}
 {-# LANGUAGE TypeFamilies               #-}
 
 -- | Computing the free variables of a term lazily.
@@ -66,12 +65,10 @@ import Control.Applicative hiding (empty)
 import Control.Monad.Reader
 
 
-import Data.Foldable (Foldable, foldMap)
 import Data.IntMap (IntMap)
 import qualified Data.IntMap as IntMap
 import Data.IntSet (IntSet)
 import qualified Data.IntSet as IntSet
-import Data.Monoid ( Monoid, mempty, mappend, mconcat )
 import Data.Semigroup ( Semigroup, (<>) )
 
 
@@ -83,6 +80,7 @@ import Agda.Utils.Functor
 import Agda.Utils.Lens
 import Agda.Utils.Monad
 import Agda.Utils.Null
+import Agda.Utils.Semigroup
 import Agda.Utils.Singleton
 import Agda.Utils.Size
 
@@ -433,9 +431,6 @@ type FreeM a c = Reader (FreeEnv' a IgnoreSorts c) c
 runFreeM :: IsVarSet a c => SingleVar c -> IgnoreSorts -> FreeM a c -> c
 runFreeM single i m = runReader m $ initFreeEnv i single
 
-instance (Applicative m, Semigroup c) => Semigroup (FreeT a b m c) where
-  (<>) = liftA2 (<>)
-
 instance (Functor m, Applicative m, Monad m, Semigroup c, Monoid c) => Monoid (FreeT a b m c) where
   mempty  = pure mempty
   mappend = (<>)
@@ -479,12 +474,12 @@ underFlexRig = local . over lensFlexRig . composeFlexRig . view lensFlexRig
 
 -- | What happens to the variables occurring under a constructor?
 underConstructor :: (MonadReader r m, LensFlexRig a r, Semigroup a) => ConHead -> m z -> m z
-underConstructor (ConHead c i fs) =
-  case (i,fs) of
+underConstructor (ConHead _c _d i _fs) =
+  case i of
     -- Coinductive (record) constructors admit infinite cycles:
-    (CoInductive, _)   -> underFlexRig WeaklyRigid
+    CoInductive -> underFlexRig WeaklyRigid
     -- Inductive constructors do not admit infinite cycles:
-    (Inductive, _)    -> underFlexRig StronglyRigid
+    Inductive   -> underFlexRig StronglyRigid
     -- Ulf, 2019-10-18: Now the termination checker treats inductive recursive records
     -- the same as datatypes, so absense of infinite cycles can be proven in Agda, and thus
     -- the unifier is allowed to do it too. Test case: test/Succeed/Issue1271a.agda
@@ -492,7 +487,6 @@ underConstructor (ConHead c i fs) =
     -- -- Inductive record constructors do not admit infinite cycles,
     -- -- but this cannot be proven inside Agda.
     -- -- Thus, unification should not prove it either.
-    -- (Inductive, (_:_)) -> id
 
 ---------------------------------------------------------------------------
 -- * Recursively collecting free variables.
@@ -515,7 +509,7 @@ instance Free Term where
   -- {-# SPECIALIZE freeVars' :: Term -> FreeM Any #-}
   -- {-# SPECIALIZE freeVars' :: Term -> FreeM All #-}
   -- {-# SPECIALIZE freeVars' :: Term -> FreeM VarSet #-}
-  freeVars' t = case t of
+  freeVars' t = case unSpine t of -- #4484: unSpine to avoid projected variables being treated as StronglyRigid
     Var n ts     -> variable n `mappend` do underFlexRig WeaklyRigid $ freeVars' ts
     -- λ is not considered guarding, as
     -- we cannot prove that x ≡ λy.x is impossible.
@@ -539,20 +533,23 @@ instance Free Term where
 
 instance Free t => Free (Type' t) where
   freeVars' (El s t) =
-    ifM ((IgnoreNot ==) <$> asks feIgnoreSorts)
+    ifM (asks ((IgnoreNot ==) . feIgnoreSorts))
       {- then -} (freeVars' (s, t))
       {- else -} (freeVars' t)
 
 instance Free Sort where
   freeVars' s =
-    ifM ((IgnoreAll ==) <$> asks feIgnoreSorts) mempty $ {- else -}
+    ifM (asks ((IgnoreAll ==) . feIgnoreSorts)) mempty $ {- else -}
     case s of
       Type a     -> freeVars' a
       Prop a     -> freeVars' a
-      Inf        -> mempty
+      Inf _ _    -> mempty
+      SSet a     -> freeVars' a
       SizeUniv   -> mempty
+      LockUniv   -> mempty
       PiSort a s -> underFlexRig (Flexible mempty) (freeVars' $ unDom a) `mappend`
                     underFlexRig WeaklyRigid (freeVars' (getSort a, s))
+      FunSort s1 s2 -> freeVars' s1 `mappend` freeVars' s2
       UnivSort s -> underFlexRig WeaklyRigid $ freeVars' s
       MetaS x es -> underFlexRig (Flexible $ singleton x) $ freeVars' es
       DefS _ es  -> underFlexRig WeaklyRigid $ freeVars' es
@@ -561,15 +558,8 @@ instance Free Sort where
 instance Free Level where
   freeVars' (Max _ as) = freeVars' as
 
-instance Free PlusLevel where
+instance Free t => Free (PlusLevel' t) where
   freeVars' (Plus _ l)    = freeVars' l
-
-instance Free LevelAtom where
-  freeVars' l = case l of
-    MetaLevel m vs   -> underFlexRig (Flexible $ singleton m) $ freeVars' vs
-    NeutralLevel _ v -> freeVars' v
-    BlockedLevel _ v -> freeVars' v
-    UnreducedLevel v -> freeVars' v
 
 instance Free t => Free [t]            where
 instance Free t => Free (Maybe t)      where

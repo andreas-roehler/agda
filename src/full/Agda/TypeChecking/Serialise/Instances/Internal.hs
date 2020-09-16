@@ -65,8 +65,18 @@ instance EmbPrj a => EmbPrj (Elim' a) where
     valu [0, a, b] = valuN Proj a b
     valu _         = malformed
 
+instance EmbPrj I.DataOrRecord where
+  icod_ = \case
+    IsData      -> icodeN' IsData
+    IsRecord pm -> icodeN' IsRecord pm
+
+  value = vcase $ \case
+    []   -> valuN IsData
+    [pm] -> valuN IsRecord pm
+    _    -> malformed
+
 instance EmbPrj I.ConHead where
-  icod_ (ConHead a b c) = icodeN' ConHead a b c
+  icod_ (ConHead a b c d) = icodeN' ConHead a b c d
 
   value = valueN ConHead
 
@@ -123,28 +133,26 @@ instance EmbPrj PlusLevel where
 
   value = valueN Plus
 
-instance EmbPrj LevelAtom where
-  icod_ (NeutralLevel r a) = icodeN' (NeutralLevel r) a
-  icod_ (UnreducedLevel a) = icodeN 1 UnreducedLevel a
-  icod_ (MetaLevel a b)    = __IMPOSSIBLE__
-  icod_ BlockedLevel{}     = __IMPOSSIBLE__
+instance EmbPrj IsFibrant where
+  icod_ IsFibrant = return 0
+  icod_ IsStrict  = return 1
 
-  value = vcase valu where
-    valu [a]    = valuN UnreducedLevel a -- we forget that we are a NeutralLevel,
-                                         -- since we do not want do (de)serialize
-                                         -- the reason for neutrality
-    valu [1, a] = valuN UnreducedLevel a
-    valu _      = malformed
+  value 0 = return IsFibrant
+  value 1 = return IsStrict
+  value _ = malformed
 
 instance EmbPrj I.Sort where
   icod_ (Type  a  ) = icodeN 0 Type a
   icod_ (Prop  a  ) = icodeN 1 Prop a
   icod_ SizeUniv    = icodeN 2 SizeUniv
-  icod_ Inf         = icodeN 3 Inf
+  icod_ (Inf f a)   = icodeN 3 Inf f a
   icod_ (PiSort a b) = icodeN 4 PiSort a b
-  icod_ (UnivSort a) = icodeN 5 UnivSort a
+  icod_ (FunSort a b) = icodeN 5 FunSort a b
+  icod_ (UnivSort a) = icodeN 6 UnivSort a
   icod_ (MetaS a b)  = __IMPOSSIBLE__
-  icod_ (DefS a b)   = icodeN 6 DefS a b
+  icod_ (DefS a b)   = icodeN 7 DefS a b
+  icod_ (SSet  a  ) = icodeN 8 SSet a
+  icod_ LockUniv    = icodeN 9 LockUniv
   icod_ (DummyS s)   = do
     liftIO $ putStrLn $ "Dummy sort in serialization: " ++ s
     __IMPOSSIBLE__
@@ -153,10 +161,13 @@ instance EmbPrj I.Sort where
     valu [0, a]    = valuN Type  a
     valu [1, a]    = valuN Prop  a
     valu [2]       = valuN SizeUniv
-    valu [3]       = valuN Inf
+    valu [3, f, a] = valuN Inf f a
     valu [4, a, b] = valuN PiSort a b
-    valu [5, a]    = valuN UnivSort a
-    valu [6, a, b] = valuN DefS a b
+    valu [5, a, b] = valuN FunSort a b
+    valu [6, a]    = valuN UnivSort a
+    valu [7, a, b] = valuN DefS a b
+    valu [8, a]    = valuN SSet a
+    valu [9]       = valuN LockUniv
     valu _         = malformed
 
 instance EmbPrj DisplayForm where
@@ -197,9 +208,30 @@ instance EmbPrj CompKit where
   value = valueN CompKit
 
 instance EmbPrj Definition where
-  icod_ (Defn a b c d e f g h i j k l m n o p q) = icodeN' Defn a b (P.killRange c) d e f g h i j k l m n o p q
+  icod_ (Defn a b c d e f g h i j k l m n o p q r) = icodeN' Defn a b (P.killRange c) d e f g h i j k l m n o p q r
 
   value = valueN Defn
+
+instance EmbPrj NotBlocked where
+  icod_ ReallyNotBlocked = icodeN' ReallyNotBlocked
+  icod_ (StuckOn a)      = icodeN 0 StuckOn a
+  icod_ Underapplied     = icodeN 1 Underapplied
+  icod_ AbsurdMatch      = icodeN 2 AbsurdMatch
+  icod_ MissingClauses   = icodeN 3 MissingClauses
+
+  value = vcase valu where
+    valu []     = valuN ReallyNotBlocked
+    valu [0, a] = valuN StuckOn a
+    valu [1]    = valuN Underapplied
+    valu [2]    = valuN AbsurdMatch
+    valu [3]    = valuN MissingClauses
+    valu _      = malformed
+
+instance EmbPrj Blocked_ where
+  icod_ (NotBlocked a b) = icodeN' NotBlocked a b
+  icod_ Blocked{} = __IMPOSSIBLE__
+
+  value = valueN NotBlocked
 
 instance EmbPrj NLPat where
   icod_ (PVar a b)      = icodeN 0 PVar a b
@@ -228,14 +260,16 @@ instance EmbPrj NLPType where
 instance EmbPrj NLPSort where
   icod_ (PType a)   = icodeN 0 PType a
   icod_ (PProp a)   = icodeN 1 PProp a
-  icod_ PInf        = icodeN 2 PInf
+  icod_ (PInf f a)  = icodeN 2 PInf f a
   icod_ PSizeUniv   = icodeN 3 PSizeUniv
+  icod_ PLockUniv   = icodeN 4 PSizeUniv
 
   value = vcase valu where
     valu [0, a] = valuN PType a
     valu [1, a] = valuN PProp a
-    valu [2]    = valuN PInf
+    valu [2, f, a] = valuN PInf f a
     valu [3]    = valuN PSizeUniv
+    valu [4]    = valuN PLockUniv
     valu _      = malformed
 
 instance EmbPrj RewriteRule where
@@ -330,22 +364,24 @@ instance EmbPrj Defn where
   icod_ (Function    a b s t (_:_) c d e f g h i j k)   = __IMPOSSIBLE__
   icod_ (Function    a b s t []    c d e f g h i j k)   =
     icodeN 1 (\ a b s -> Function a b s t []) a b s c d e f g h i j k
-  icod_ (Datatype    a b c d e f g h i)                 = icodeN 2 Datatype a b c d e f g h i
-  icod_ (Record      a b c d e f g h i j k)             = icodeN 3 Record a b c d e f g h i j k
+  icod_ (Datatype    a b c d e f g h)                   = icodeN 2 Datatype a b c d e f g h
+  icod_ (Record      a b c d e f g h i j k l)           = icodeN 3 Record a b c d e f g h i j k l
   icod_ (Constructor a b c d e f g h i j)               = icodeN 4 Constructor a b c d e f g h i j
   icod_ (Primitive   a b c d e)                         = icodeN 5 Primitive a b c d e
+  icod_ (PrimitiveSort a b)                             = icodeN 6 PrimitiveSort a b
   icod_ AbstractDefn{}                                  = __IMPOSSIBLE__
-  icod_ GeneralizableVar                                = icodeN 6 GeneralizableVar
+  icod_ GeneralizableVar                                = icodeN 7 GeneralizableVar
   icod_ DataOrRecSig{}                                  = __IMPOSSIBLE__
 
   value = vcase valu where
     valu [0]                                        = valuN Axiom
     valu [1, a, b, s, c, d, e, f, g, h, i, j, k]    = valuN (\ a b s -> Function a b s Nothing []) a b s c d e f g h i j k
-    valu [2, a, b, c, d, e, f, g, h, i]             = valuN Datatype a b c d e f g h i
-    valu [3, a, b, c, d, e, f, g, h, i, j, k]       = valuN Record  a b c d e f g h i j k
+    valu [2, a, b, c, d, e, f, g, h]                = valuN Datatype a b c d e f g h
+    valu [3, a, b, c, d, e, f, g, h, i, j, k, l]    = valuN Record  a b c d e f g h i j k l
     valu [4, a, b, c, d, e, f, g, h, i, j]          = valuN Constructor a b c d e f g h i j
     valu [5, a, b, c, d, e]                         = valuN Primitive   a b c d e
-    valu [6]                                        = valuN GeneralizableVar
+    valu [6, a, b]                                  = valuN PrimitiveSort a b
+    valu [7]                                        = valuN GeneralizableVar
     valu _                                          = malformed
 
 instance EmbPrj LazySplit where
@@ -434,7 +470,7 @@ instance EmbPrj TermHead where
     valu _      = malformed
 
 instance EmbPrj I.Clause where
-  icod_ (Clause a b c d e f g h) = icodeN' Clause a b c d e f g h
+  icod_ (Clause a b c d e f g h i j) = icodeN' Clause a b c d e f g h i j
 
   value = valueN Clause
 

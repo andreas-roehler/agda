@@ -1,4 +1,3 @@
-{-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE NondecreasingIndentation #-}
 
 {-| Compile-time irrelevance.
@@ -116,7 +115,7 @@ workOnTypes cont = do
 --   as argument.
 workOnTypes' :: (MonadTCEnv m) => Bool -> m a -> m a
 workOnTypes' experimental
-  = modifyContext (map $ mapRelevance f)
+  = modifyContextInfo (mapRelevance f)
   . applyQuantityToContext zeroQuantity
   . typeLevelReductions
   . localTC (\ e -> e { envWorkingOnTypes = True })
@@ -322,9 +321,12 @@ instance UsableRelevance Sort where
   usableRel rel s = case s of
     Type l -> usableRel rel l
     Prop l -> usableRel rel l
-    Inf    -> return True
+    Inf f n -> return True
+    SSet l -> usableRel rel l
     SizeUniv -> return True
+    LockUniv -> return True
     PiSort a s -> usableRel rel (a,s)
+    FunSort s1 s2 -> usableRel rel (s1,s2)
     UnivSort s -> usableRel rel s
     MetaS x es -> usableRel rel es
     DefS d es  -> usableRel rel $ Def d es
@@ -335,15 +337,6 @@ instance UsableRelevance Level where
 
 instance UsableRelevance PlusLevel where
   usableRel rel (Plus _ l) = usableRel rel l
-
-instance UsableRelevance LevelAtom where
-  usableRel rel l = case l of
-    MetaLevel m vs -> do
-      mrel <- getMetaRelevance <$> lookupMeta m
-      return (mrel `moreRelevant` rel) `and2M` usableRel rel vs
-    NeutralLevel _ v -> usableRel rel v
-    BlockedLevel _ v -> usableRel rel v
-    UnreducedLevel v -> usableRel rel v
 
 instance UsableRelevance a => UsableRelevance [a] where
   usableRel rel = andM . map (usableRel rel)
@@ -366,7 +359,7 @@ instance UsableRelevance a => UsableRelevance (Arg a) where
 instance UsableRelevance a => UsableRelevance (Dom a) where
   usableRel rel Dom{unDom = u} = usableRel rel u
 
-instance (Subst t a, UsableRelevance a) => UsableRelevance (Abs a) where
+instance (Subst a, UsableRelevance a) => UsableRelevance (Abs a) where
   usableRel rel abs = underAbstraction_ abs $ \u -> usableRel rel u
 
 -- | Check whether something can be used in a position of the given modality.
@@ -417,7 +410,7 @@ instance UsableModality Term where
         text ("has modality " ++ show mmod ++ ", which is a " ++
               (if ok then "" else "NOT ") ++ "more usable modality than " ++ show mod)
       return ok `and2M` usableMod mod vs
-    DontCare _ -> return $ isIrrelevant mod
+    DontCare v -> usableMod mod v
     Dummy{}  -> return True
 
 instance UsableRelevance a => UsableModality (Type' a) where
@@ -442,15 +435,6 @@ instance UsableModality Level where
 --   usableMod mod ClosedLevel{} = return True
 --   usableMod mod (Plus _ l)    = usableMod mod l
 
--- instance UsableModality LevelAtom where
---   usableMod mod l = case l of
---     MetaLevel m vs -> do
---       mmod <- getMetaModality <$> lookupMeta m
---       return (mmod `moreUsableModality` mod) `and2M` usableMod mod vs
---     NeutralLevel _ v -> usableMod mod v
---     BlockedLevel _ v -> usableMod mod v
---     UnreducedLevel v -> usableMod mod v
-
 instance UsableModality a => UsableModality [a] where
   usableMod mod = andM . map (usableMod mod)
 
@@ -472,7 +456,7 @@ instance UsableModality a => UsableModality (Arg a) where
 instance UsableModality a => UsableModality (Dom a) where
   usableMod mod Dom{unDom = u} = usableMod mod u
 
-instance (Subst t a, UsableModality a) => UsableModality (Abs a) where
+instance (Subst a, UsableModality a) => UsableModality (Abs a) where
   usableMod mod abs = underAbstraction_ abs $ \u -> usableMod mod u
 
 
@@ -489,3 +473,22 @@ isPropM a = do
 
 isIrrelevantOrPropM :: (LensRelevance a, LensSort a, PrettyTCM a, MonadReduce m, MonadDebug m) => a -> m Bool
 isIrrelevantOrPropM x = return (isIrrelevant x) `or2M` isPropM x
+
+-- * Fibrant types
+
+-- | Is a type fibrant (i.e. Type, Prop)?
+
+isFibrant :: (LensSort a, MonadReduce m) => a -> m Bool
+isFibrant a = reduce (getSort a) <&> \case
+  Type{}     -> True
+  Prop{}     -> True
+  Inf f _    -> f == IsFibrant
+  SSet{}     -> False
+  SizeUniv{} -> False
+  LockUniv{} -> False
+  PiSort{}   -> False
+  FunSort{}  -> False
+  UnivSort{} -> False
+  MetaS{}    -> False
+  DefS{}     -> False
+  DummyS{}   -> False

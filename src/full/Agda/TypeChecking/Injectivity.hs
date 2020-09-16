@@ -1,12 +1,50 @@
+{- |
+
+"Injectivity", or more precisely, "constructor headedness", is a
+property of functions defined by pattern matching that helps us solve
+constraints involving blocked applications of such functions.
+"Blocked" shall mean here that pattern matching is blocked on a meta
+variable, and constructor headedness lets us learn more about that
+meta variable.
+
+Consider the simple example:
+@
+  isZero : Nat -> Bool
+  isZero zero    = true
+  isZero (suc n) = false
+@
+This function is constructor-headed, meaning that all rhss are headed
+by a distinct constructor.  Thus, on a constraint like
+@
+  isZero ?X = false : Bool
+@
+involving an application of @isZero@ that is blocked on meta variable @?X@,
+we can exploit injectivity and learn that @?X = suc ?Y@ for a new
+meta-variable @?Y@.
+
+Which functions qualify for injectivity?
+
+1. The function needs to have at least one non-absurd clause that has
+a proper match, meaning that the function can actually be blocked on a
+meta.  Proper matches are these patterns:
+
+  - data constructor (@ConP@, but not record constructor)
+  - literal (@LitP@)
+  - HIT-patterns (@DefP@)
+
+Projection patterns (@ProjP@) are excluded because metas cannot occupy their place!
+
+2. All the clauses that satisfy (1.) need to be headed by a distinct constructor.
+
+-}
 
 module Agda.TypeChecking.Injectivity where
 
-import Prelude hiding (mapM)
-
 import Control.Applicative
+import Control.Monad.Except
 import Control.Monad.Fail
-import Control.Monad.State hiding (mapM, forM)
-import Control.Monad.Reader hiding (mapM, forM)
+import Control.Monad.State
+import Control.Monad.Reader
 import Control.Monad.Trans.Maybe
 
 import qualified Data.Map as Map
@@ -22,7 +60,6 @@ import Agda.Syntax.Internal.Pattern
 
 import Agda.TypeChecking.Irrelevance (isIrrelevantOrPropM)
 import Agda.TypeChecking.Monad
-import Agda.TypeChecking.Monad.Builtin
 import Agda.TypeChecking.Substitute
 import Agda.TypeChecking.Reduce
 import {-# SOURCE #-} Agda.TypeChecking.MetaVars
@@ -31,7 +68,6 @@ import Agda.TypeChecking.Pretty
 import Agda.TypeChecking.Polarity
 import Agda.TypeChecking.Warnings
 
-import Agda.Utils.Except ( MonadError )
 import Agda.Utils.Functor
 import Agda.Utils.List
 import Agda.Utils.Maybe
@@ -68,6 +104,7 @@ headSymbol v = do -- ignoreAbstractMode $ do
             if Set.member f fs then no else yes
         Function{}    -> no
         Primitive{}   -> no
+        PrimitiveSort{} -> no
         GeneralizableVar{} -> __IMPOSSIBLE__
         Constructor{} -> __IMPOSSIBLE__
         AbstractDefn{}-> __IMPOSSIBLE__
@@ -102,8 +139,8 @@ headSymbol' v = do
       Lit _      -> return Nothing
       Lam{}      -> return Nothing
       Level{}    -> return Nothing
-      MetaV{}    -> return Nothing
       DontCare{} -> return Nothing
+      MetaV{}    -> __IMPOSSIBLE__
       Dummy s _  -> __IMPOSSIBLE_VERBOSE__ s
 
 -- | Does deBruijn variable i correspond to a top-level argument, and if so
@@ -125,20 +162,24 @@ updateHeads f m = joinHeadMaps <$> mapM f' (Map.toList m)
   where f' (h, c) = (`Map.singleton` c) <$> f h c
 
 checkInjectivity :: QName -> [Clause] -> TCM FunctionInverse
-checkInjectivity f cs
-  | pointless cs = do
-      reportSLn "tc.inj.check.pointless" 20 $
+checkInjectivity f cs0
+  | not (any properlyMatchingClause cs) = do
+      reportSLn "tc.inj.check.pointless" 35 $
         "Injectivity of " ++ prettyShow (A.qnameToConcrete f) ++ " would be pointless."
       return NotInjective
+  | otherwise = checkInjectivity' f cs
   where
-    -- Is it pointless to use injectivity for this function?
-    pointless []      = True
-    pointless (_:_:_) = False
-    pointless [cl] = not $ any (properlyMatching . namedArg) $ namedClausePats cl
-        -- Andreas, 2014-06-12
-        -- If we only have record patterns, it is also pointless.
-        -- We need at least one proper match.
-checkInjectivity f cs = fromMaybe NotInjective <.> runMaybeT $ do
+    -- We can filter out absurd clauses.
+    cs = filter (isJust . clauseBody) cs0
+    -- We cannot filter out clauses that have no proper match, because
+    -- these could be catch-all clauses.
+    -- However, we need at least one proper match to get injectivity started.
+    properlyMatchingClause =
+      any (properlyMatching' False False . namedArg) . namedClausePats
+
+-- | Precondition: all the given clauses are non-absurd and contain a proper match.
+checkInjectivity' :: QName -> [Clause] -> TCM FunctionInverse
+checkInjectivity' f cs = fromMaybe NotInjective <.> runMaybeT $ do
   reportSLn "tc.inj.check" 40 $ "Checking injectivity of " ++ prettyShow f
 
   let varToArg :: Clause -> TermHead -> MaybeT TCM TermHead
@@ -198,9 +239,10 @@ checkOverapplication es = updateHeads overapplied
         Function{}     -> False
         Datatype{}     -> True
         Record{}       -> True
-        Constructor{conSrcCon = ConHead{ conFields = fs }}
-                       -> null fs   -- Record constructors can be eliminated by projections
+        Constructor{conSrcCon = ConHead{ conDataRecord = d, conFields = fs }}
+                       -> d == IsData || null fs   -- Record constructors can be eliminated by projections
         Primitive{}    -> False
+        PrimitiveSort{} -> __IMPOSSIBLE__
         GeneralizableVar{} -> __IMPOSSIBLE__
 
 
@@ -239,10 +281,9 @@ functionInverse v = case v of
 data InvView = Inv QName [Elim] (InversionMap Clause)
              | NoInv
 
--- | Precondition: The first argument must be blocked and the second must be
---                 neutral.
-useInjectivity :: MonadConversion m => CompareDirection -> CompareAs -> Term -> Term -> m ()
-useInjectivity dir ty blk neu = locallyTC eInjectivityDepth succ $ do
+-- | Precondition: The first term must be blocked on the given meta and the second must be neutral.
+useInjectivity :: MonadConversion m => CompareDirection -> Blocker -> CompareAs -> Term -> Term -> m ()
+useInjectivity dir blocker ty blk neu = locallyTC eInjectivityDepth succ $ do
   inv <- functionInverse blk
   -- Injectivity might cause non-termination for unsatisfiable constraints
   -- (#431, #3067). Look at the number of active problems and the injectivity
@@ -260,9 +301,6 @@ useInjectivity dir ty blk neu = locallyTC eInjectivityDepth succ $ do
         pwords "useInjectivity on" ++
         [ prettyTCM blk, prettyTCM cmp, prettyTCM neu, prettyTCM ty]
       let canReduceToSelf = Map.member (ConsHead f) hdMap || Map.member UnknownHead hdMap
-          allUnique       = all isUnique hdMap
-          isUnique [_] = True
-          isUnique _   = False
       case neu of
         -- f us == f vs  <=>  us == vs
         -- Crucially, this relies on `f vs` being neutral and only works
@@ -300,7 +338,7 @@ useInjectivity dir ty blk neu = locallyTC eInjectivityDepth succ $ do
           Just hd -> invertFunction cmp blk inv hd fallback err success
             where err = typeError $ app (\ u v -> UnequalTerms cmp u v ty) blk neu
   where
-    fallback     = addConstraint $ app (ValueCmp cmp ty) blk neu
+    fallback     = addConstraint blocker $ app (ValueCmp cmp ty) blk neu
     success blk' = app (compareAs cmp ty) blk' neu
 
     (cmp, app) = case dir of
@@ -358,7 +396,7 @@ invertFunction cmp blk (Inv f blkArgs hdMap) hd fallback err success = do
           compareElims pol fs fTy (Def f []) margs blkArgs'
 
           -- Check that we made progress.
-          r <- liftReduce $ unfoldDefinitionStep False blk f blkArgs
+          r <- liftReduce $ unfoldDefinitionStep False (Def f []) f blkArgs
           case r of
             YesReduction _ blk' -> do
               reportSDoc "tc.inj.invert.success" 20 $ hsep ["Successful inversion of", prettyTCM f, "at", pretty hd]

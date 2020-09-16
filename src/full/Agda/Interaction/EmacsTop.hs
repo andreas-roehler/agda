@@ -24,6 +24,7 @@ import Agda.TypeChecking.Pretty.Warning (prettyTCWarnings, prettyTCWarnings')
 import Agda.TypeChecking.Monad
 import Agda.TypeChecking.Warnings (WarningsAndNonFatalErrors(..))
 import Agda.Interaction.AgdaTop
+import Agda.Interaction.Base
 import Agda.Interaction.BasicOps as B
 import Agda.Interaction.Response as R
 import Agda.Interaction.EmacsCommand hiding (putResponse)
@@ -31,7 +32,6 @@ import Agda.Interaction.Highlighting.Emacs
 import Agda.Interaction.Highlighting.Precise (TokenBased(..))
 import Agda.Interaction.InteractionTop (localStateCommandM)
 import Agda.Interaction.Imports (getAllWarningsOfTCErr)
-import Agda.Utils.Impossible (__IMPOSSIBLE__)
 import Agda.Utils.Function (applyWhen)
 import Agda.Utils.Null (empty)
 import Agda.Utils.Maybe
@@ -48,7 +48,7 @@ import Agda.VersionCommit
 --   'mimicGHCi' reads the Emacs frontend commands from stdin,
 --   interprets them and print the result into stdout.
 mimicGHCi :: TCM () -> TCM ()
-mimicGHCi = repl (liftIO . mapM_ print <=< lispifyResponse) "Agda2> "
+mimicGHCi = repl (liftIO . mapM_ (putStrLn . prettyShow) <=< lispifyResponse) "Agda2> "
 
 -- | Convert Response to an elisp value for the interactive emacs frontend.
 
@@ -64,18 +64,20 @@ lispifyResponse (Resp_ClearHighlighting tokenBased) =
                    [ Q (lispifyTokenBased tokenBased) ]
          ]
 lispifyResponse Resp_DoneAborting = return [ L [ A "agda2-abort-done" ] ]
+lispifyResponse Resp_DoneExiting  = return [ L [ A "agda2-exit-done"  ] ]
 lispifyResponse Resp_ClearRunningInfo = return [ clearRunningInfo ]
 lispifyResponse (Resp_RunningInfo n s)
   | n <= 1    = return [ displayRunningInfo s ]
   | otherwise = return [ L [A "agda2-verbose", A (quote s)] ]
 lispifyResponse (Resp_Status s)
     = return [ L [ A "agda2-status-action"
-                 , A (quote $ List.intercalate "," $ catMaybes [checked, showImpl])
+                 , A (quote $ List.intercalate "," $ catMaybes [checked, showImpl, showIrr])
                  ]
              ]
   where
-    checked  = boolToMaybe (sChecked               s) "Checked"
-    showImpl = boolToMaybe (sShowImplicitArguments s) "ShowImplicit"
+    checked  = boolToMaybe (sChecked                 s) "Checked"
+    showImpl = boolToMaybe (sShowImplicitArguments   s) "ShowImplicit"
+    showIrr  = boolToMaybe (sShowIrrelevantArguments s) "ShowIrrelevant"
 
 lispifyResponse (Resp_JumpToError f p) = return
   [ lastTag 3 $
@@ -131,7 +133,9 @@ lispifyDisplayInfo info = case info of
     Info_NormalForm state cmode time expr -> do
       exprDoc <- evalStateT prettyExpr state
       let doc = maybe empty prettyTimed time $$ exprDoc
-      format (render doc) "*Normal Form*"
+          lbl | cmode == HeadCompute = "*Head Normal Form*"
+              | otherwise            = "*Normal Form*"
+      format (render doc) lbl
       where
         prettyExpr = localStateCommandM
             $ lift
@@ -201,7 +205,7 @@ lispifyGoalSpecificDisplayInfo ii kind = localTCState $ B.withInteractionId ii $
     Goal_NormalForm cmode expr -> do
       doc <- showComputed cmode expr
       format (render doc) "*Normal Form*"   -- show?
-    Goal_GoalType norm aux ctx constraints -> do
+    Goal_GoalType norm aux ctx bndry constraints -> do
       ctxDoc <- prettyResponseContext ii True ctx
       goalDoc <- prettyTypeOfMeta norm ii
       auxDoc <- case aux of
@@ -212,6 +216,11 @@ lispifyGoalSpecificDisplayInfo ii kind = localTCState $ B.withInteractionId ii $
             GoalAndElaboration term -> do
               doc <- TCP.prettyTCM term
               return $ "Elaborates to:" <+> doc
+      let boundaryDoc
+            | null bndry = []
+            | otherwise  = [ text $ delimiter "Boundary"
+                           , vcat $ map pretty bndry
+                           ]
       let constraintsDoc = if (null constraints)
             then  []
             else  [ text $ delimiter "Constraints"
@@ -220,6 +229,7 @@ lispifyGoalSpecificDisplayInfo ii kind = localTCState $ B.withInteractionId ii $
       let doc = vcat $
             [ "Goal:" <+> goalDoc
             , auxDoc
+            , vcat boundaryDoc
             , text (replicate 60 '\x2014')
             , ctxDoc
             ] ++ constraintsDoc
@@ -331,6 +341,7 @@ explainWhyInScope s _ v xs ms = TCP.vcat
 
     pKind = \case
       ConName                  -> "constructor"
+      CoConName                -> "coinductive constructor"
       FldName                  -> "record field"
       PatternSynName           -> "pattern synonym"
       GeneralizeName           -> "generalizable variable"
@@ -410,12 +421,14 @@ prettyResponseContext ii rev ctx = withInteractionId ii $ do
           , [ "erased"       | not $ getQuantity  ai `moreQuantity` getQuantity  mod ]
             -- Print irrelevant if hypothesis is strictly less relevant than goal.
           , [ "irrelevant"   | not $ getRelevance ai `moreRelevant` getRelevance mod ]
+            -- Print instance if variable is considered by instance search
+          , [ "instance"     | isInstance ai ]
           ]
       ty <- prettyATop expr
       maybeVal <- traverse prettyATop letv
 
       return $
-        [ (attribute ++ prettyCtxName, ":" <+> ty <+> (parenSep extras)) ] ++
+        (attribute ++ prettyCtxName, ":" <+> ty <+> (parenSep extras)) :
         [ (prettyShow x, "=" <+> val) | val <- maybeToList maybeVal ]
 
   where
@@ -424,38 +437,15 @@ prettyResponseContext ii rev ctx = withInteractionId ii $ do
       | null docs = empty
       | otherwise = (" " <+>) $ parens $ fsep $ punctuate comma docs
 
-namedMetaOf :: B.OutputConstraint A.Expr a -> a
-namedMetaOf (B.OfType i _) = i
-namedMetaOf (B.JustType i) = i
-namedMetaOf (B.JustSort i) = i
-namedMetaOf (B.Assign i _) = i
-namedMetaOf _ = __IMPOSSIBLE__
-
--- | Print open metas nicely.
-showGoals :: Goals -> TCM String
-showGoals (ims, hms) = do
-  di <- forM ims $ \ i ->
-    B.withInteractionId (B.outputFormId $ B.OutputForm noRange [] i) $
-      prettyATop i
-  dh <- mapM showA' hms
-  return $ unlines $ map show di ++ dh
-  where
-    showA' :: B.OutputConstraint A.Expr NamedMeta -> TCM String
-    showA' m = do
-      let i = nmid $ namedMetaOf m
-      r <- getMetaRange i
-      d <- B.withMetaId i (prettyATop m)
-      return $ show d ++ "  [ at " ++ show r ++ " ]"
 
 -- | Pretty-prints the type of the meta-variable.
 
-prettyTypeOfMeta :: B.Rewrite -> InteractionId -> TCM Doc
+prettyTypeOfMeta :: Rewrite -> InteractionId -> TCM Doc
 prettyTypeOfMeta norm ii = do
   form <- B.typeOfMeta norm ii
   case form of
-    B.OfType _ e -> prettyATop e
+    OfType _ e -> prettyATop e
     _            -> prettyATop form
-
 
 -- | Prefix prettified CPUTime with "Time:"
 prettyTimed :: CPUTime -> Doc

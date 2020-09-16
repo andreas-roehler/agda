@@ -9,7 +9,6 @@ import Data.Either
 import qualified Data.List as List
 import Data.Maybe
 import Data.Foldable ( foldrM )
-import Data.Traversable ( traverse )
 
 import Agda.Syntax.Common
 import Agda.Syntax.Internal as I
@@ -30,6 +29,7 @@ import Agda.TypeChecking.Pretty
 import Agda.TypeChecking.Records
 import Agda.TypeChecking.Substitute
 import Agda.TypeChecking.Telescope
+import Agda.TypeChecking.Telescope.Path
 
 import Agda.TypeChecking.Abstract
 import Agda.TypeChecking.Rules.LHS.Implicit
@@ -37,9 +37,9 @@ import Agda.TypeChecking.Rules.LHS.Problem (ProblemEq(..))
 
 import Agda.Utils.Functor
 import Agda.Utils.List
+import qualified Agda.Utils.List1 as List1
 import Agda.Utils.Maybe
 import Agda.Utils.Monad
-import Agda.Utils.NonemptyList
 import Agda.Utils.Null (empty)
 import Agda.Utils.Permutation
 import Agda.Utils.Pretty (prettyShow)
@@ -123,13 +123,14 @@ withFunctionType
   -> [WithHiding (Term, EqualityView)]  -- ^ @Δ₁,Δ₂ ⊢ vs : raise Δ₂ as@  with and rewrite-expressions and their type.
   -> Telescope                          -- ^ @Δ₁ ⊢ Δ₂@                   context extension to type with-expressions.
   -> Type                               -- ^ @Δ₁,Δ₂ ⊢ b@                 type of rhs.
+  -> [(Int,(Term,Term))]                -- ^ @Δ₁,Δ₂ ⊢ [(i,(u0,u1))] : b  boundary.
   -> TCM (Type, Nat)
     -- ^ @Δ₁ → wtel → Δ₂′ → b′@ such that
     --     @[vs/wtel]wtel = as@ and
     --     @[vs/wtel]Δ₂′ = Δ₂@ and
     --     @[vs/wtel]b′ = b@.
     -- Plus the final number of with-arguments.
-withFunctionType delta1 vtys delta2 b = addContext delta1 $ do
+withFunctionType delta1 vtys delta2 b bndry = addContext delta1 $ do
 
   reportSLn "tc.with.abstract" 20 $ "preparing for with-abstraction"
 
@@ -137,7 +138,7 @@ withFunctionType delta1 vtys delta2 b = addContext delta1 $ do
   -- of the pattern variables not mentioned in @vs : as@.
   let dbg n s x = reportSDoc "tc.with.abstract" n $ nest 2 $ text (s ++ " =") <+> prettyTCM x
 
-  let d2b = telePi_ delta2 b
+  d2b <- telePiPath_ delta2 b bndry
   dbg 30 "Δ₂ → B" d2b
   d2b  <- normalise d2b
   dbg 30 "normal Δ₂ → B" d2b
@@ -150,7 +151,20 @@ withFunctionType delta1 vtys delta2 b = addContext delta1 $ do
   wd2b <- foldrM piAbstract d2b vtys
   dbg 30 "wΓ → Δ₂ → B" wd2b
 
-  return (telePi_ delta1 wd2b, countWithArgs (map (snd . whThing) vtys))
+  let nwithargs = countWithArgs (map (snd . whThing) vtys)
+
+  TelV wtel _ <- telViewUpTo nwithargs wd2b
+
+  -- select the boundary for "Δ₁" abstracting over "wΓ.Δ₂"
+  let bndry' = [(i - sd2,(lams u0, lams u1)) | (i,(u0,u1)) <- bndry, i >= sd2]
+        where sd2 = size delta2
+              lams u = teleNoAbs wtel (abstract delta2 u)
+
+  d1wd2b <- telePiPath_ delta1 wd2b bndry'
+
+  dbg 30 "Δ₁ → wΓ → Δ₂ → B" d1wd2b
+
+  return (d1wd2b, nwithargs)
 
 countWithArgs :: [EqualityView] -> Nat
 countWithArgs = sum . map countArgs
@@ -399,13 +413,13 @@ stripWithClausePatterns cxtNames parent f t delta qs npars perm ps = do
       case namedArg q of
         ProjP o d -> case A.isProjP p of
           Just (o', AmbQ ds) -> do
+            -- We assume here that neither @o@ nor @o'@ can be @ProjSystem@.
+            if o /= o' then liftTCM $ mismatchOrigin o o' else do
             -- Andreas, 2016-12-28, issue #2360:
             -- We disambiguate the projection in the with clause
             -- to the projection in the parent clause.
             d  <- liftTCM $ getOriginalProjection d
-            found <- anyM ds ((d ==) <.> (liftTCM . getOriginalProjection))
-            -- We assume here that neither @o@ nor @o'@ can be @ProjSystem@.
-            if o /= o' then liftTCM $ mismatchOrigin o o' else do
+            found <- anyM ds $ \ d' -> liftTCM $ (Just d ==) . fmap projOrig <$> isProjection d'
             if not found then mismatch else do
               (self1, t1, ps) <- liftTCM $ do
                 t <- reduce t
@@ -427,7 +441,9 @@ stripWithClausePatterns cxtNames parent f t delta qs npars perm ps = do
         VarP _ x  ->
           (setVarArgInfo x p :) <$> recurse (var (dbPatVarIndex x))
 
-        IApplyP{}  -> typeError $ GenericError $ "with clauses not supported in the presence of Path patterns" -- TODO maybe we can support them now?
+        IApplyP _ _ _ x  ->
+          (setVarArgInfo x p :) <$> recurse (var (dbPatVarIndex x))
+
         DefP{}  -> typeError $ GenericError $ "with clauses not supported in the presence of hcomp patterns" -- TODO this should actually be impossible
 
         DotP o v  -> do
@@ -440,7 +456,7 @@ stripWithClausePatterns cxtNames parent f t delta qs npars perm ps = do
            "parent pattern is constructor " <+> prettyTCM c
          (a, b) <- mustBePi t
          -- The type of the current pattern is a datatype.
-         Def d es <- liftTCM $ normalise (unEl $ unDom a)
+         Def d es <- liftTCM $ reduce (unEl $ unDom a)
          let us = fromMaybe __IMPOSSIBLE__ $ allApplyElims es
          -- Get the original constructor and field names.
          c <- either __IMPOSSIBLE__ (`withRangeOf` c) <$> do liftTCM $ getConForm $ conName c
@@ -458,8 +474,8 @@ stripWithClausePatterns cxtNames parent f t delta qs npars perm ps = do
                 -- If dot-pattern is an application of the constructor, try to preserve the
                 -- arguments.
                 Application (A.Con (A.AmbQ cs')) es -> do
-                  cs' <- liftTCM $ snd . partitionEithers <$> mapM getConForm (toList cs')
-                  unless (elem c cs') mismatch
+                  cs' <- liftTCM $ List1.rights <$> mapM getConForm cs'
+                  unless (c `elem` cs') mismatch
                   return $ (map . fmap . fmap) (A.DotP r) es
                 _  -> return $ map (unnamed (A.WildP empty) <$) qs'
             stripConP d us b c ConOCon qs' ps'
@@ -486,13 +502,14 @@ stripWithClausePatterns cxtNames parent f t delta qs npars perm ps = do
             -- Check whether the with-clause constructor can be (possibly trivially)
             -- disambiguated to be equal to the parent-clause constructor.
             -- Andreas, 2017-08-13, herein, ignore abstract constructors.
-            cs' <- liftTCM $ snd . partitionEithers <$> mapM getConForm (toList cs')
-            unless (elem c cs') mismatch
+            cs' <- liftTCM $ List1.rights <$> mapM getConForm cs'
+            unless (c `elem` cs') mismatch
             -- Strip the subpatterns ps' and then continue.
             stripConP d us b c ConOCon qs' ps'
 
           A.RecP _ fs -> caseMaybeM (liftTCM $ isRecord d) mismatch $ \ def -> do
-            ps' <- liftTCM $ insertMissingFields d (const $ A.WildP empty) fs (recordFieldNames def)
+            ps' <- liftTCM $ insertMissingFieldsFail d (const $ A.WildP empty) fs
+                                                 (map argFromDom $ recordFieldNames def)
             stripConP d us b c ConORec qs' ps'
 
           p@(A.PatternSynP pi' c' ps') -> do
@@ -506,8 +523,8 @@ stripWithClausePatterns cxtNames parent f t delta qs npars perm ps = do
            mismatch
 
         LitP _ lit -> case namedArg p of
-          A.LitP lit' | lit == lit' -> recurse $ Lit lit
-          A.WildP{}                 -> recurse $ Lit lit
+          A.LitP _ lit' | lit == lit' -> recurse $ Lit lit
+          A.WildP{}                   -> recurse $ Lit lit
 
           p@(A.PatternSynP pi' c' [ps']) -> do
              reportSDoc "impossible" 10 $
@@ -517,12 +534,16 @@ stripWithClausePatterns cxtNames parent f t delta qs npars perm ps = do
           _ -> mismatch
       where
         recurse v = do
-          caseMaybeM (liftTCM $ isPath t) (return ()) $ \ _ ->
-            typeError $ GenericError $
-              "With-clauses currently not supported under Path abstraction."
+          -- caseMaybeM (liftTCM $ isPath t) (return ()) $ \ _ ->
+          --   typeError $ GenericError $
+          --     "With-clauses currently not supported under Path abstraction."
 
-          t' <- piApplyM t v
-          strip (self `apply1` v) t' ps qs
+          let piOrPathApplyM t v = do
+                (TelV tel t', bs) <- telViewUpToPathBoundaryP 1 t
+                unless (size tel == 1) $ __IMPOSSIBLE__
+                return (teleElims tel bs, subst 0 v t')
+          (e, t') <- piOrPathApplyM t v
+          strip (self `applyE` e) t' ps qs
 
         mismatch = addContext delta $ typeError $
           WithClausePatternMismatch (namedArg p0) q
@@ -695,7 +716,7 @@ withDisplayForm f aux delta1 delta2 n qs perm@(Perm m _) lhsPerm = do
     -- Andreas, 2015-10-28: Yes, but properly! (Issue 1407)
     sub top ys wild = parallelS $ map term [0 .. m + top - 1]
       where
-        term i = maybe wild var $ List.findIndex (Just i ==) ys
+        term i = maybe wild var $ List.elemIndex (Just i) ys
 
 -- Andreas, 2014-12-05 refactored using numberPatVars
 -- Andreas, 2013-02-28 modeled after Coverage/Match/buildMPatterns

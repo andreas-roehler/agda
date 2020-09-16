@@ -185,6 +185,7 @@ eligibleForProjectionLike d = eligible . theDef <$> getConstInfo d
     GeneralizableVar{} -> False
     Function{}    -> False
     Primitive{}   -> False
+    PrimitiveSort{} -> False
     Constructor{} -> __IMPOSSIBLE__
     AbstractDefn d -> eligible d
       -- Andreas, 2017-08-14, issue #2682:
@@ -259,7 +260,7 @@ makeProjection x = whenM (optProjectionLike <$> pragmaOptions) $ do
                  funAbstr = ConcreteDef} -> do
       ps0 <- filterM validProj $ candidateArgs [] t
       reportSLn "tc.proj.like" 30 $ if null ps0 then "  no candidates found"
-                                                else "  candidates: " ++ show ps0
+                                                else "  candidates: " ++ prettyShow ps0
       unless (null ps0) $ do
         -- Andreas 2012-09-26: only consider non-recursive functions for proj.like.
         -- Issue 700: problems with recursive funs. in term.checker and reduction
@@ -271,16 +272,20 @@ makeProjection x = whenM (optProjectionLike <$> pragmaOptions) $ do
               , nest 2 $ "clauses =" <?> vcat (map pretty cls) ]
             Just (d, n) -> do
               -- Yes, we are projection-like!
-              reportSDoc "tc.proj.like" 10 $ sep
+              reportSDoc "tc.proj.like" 10 $ vcat
                 [ prettyTCM x <+> " : " <+> prettyTCM t
-                , text $ " is projection like in argument " ++ show n ++ " for type " ++ show d
+                , nest 2 $ sep
+                  [ "is projection like in argument",  prettyTCM n, "for type", prettyTCM (unArg d) ]
                 ]
               __CRASH_WHEN__ "tc.proj.like.crash" 1000
 
               let cls' = map (dropArgs n) cls
                   cc   = dropArgs n cc0
                   st   = dropArgs n st0
-              reportSLn "tc.proj.like" 60 $ "  rewrote clauses to\n    " ++ show cc
+              reportSLn "tc.proj.like" 60 $ unlines
+                [ "  rewrote clauses to"
+                , "    " ++ show cc
+                ]
 
               -- Andreas, 2013-10-20 build parameter dropping function
               let pIndex = n + 1
@@ -322,6 +327,7 @@ makeProjection x = whenM (optProjectionLike <$> pragmaOptions) $ do
     Constructor{}  -> reportSLn "tc.proj.like" 30 $ "  not a function, but Constructor"
     Datatype{}     -> reportSLn "tc.proj.like" 30 $ "  not a function, but Datatype"
     Primitive{}    -> reportSLn "tc.proj.like" 30 $ "  not a function, but Primitive"
+    PrimitiveSort{} -> reportSLn "tc.proj.like" 30 $ "  not a function, but PrimitiveSort"
     Record{}       -> reportSLn "tc.proj.like" 30 $ "  not a function, but Record"
   where
     -- | If the user wrote a record expression as rhs,
@@ -350,11 +356,11 @@ makeProjection x = whenM (optProjectionLike <$> pragmaOptions) $ do
     checkOccurs cls n = all (nonOccur n) cls
 
     nonOccur n cl =
-      and [ take n p == [0..n - 1]
-          , onlyMatch n ps  -- projection-like functions are only allowed to match on the eliminatee
-                            -- otherwise we may end up projecting from constructor applications, in
-                            -- which case we can't reconstruct the dropped parameters
-          , checkBody m n b ]
+        (take n p == [0..n - 1]) &&
+        onlyMatch n ps &&  -- projection-like functions are only allowed to match on the eliminatee
+                          -- otherwise we may end up projecting from constructor applications, in
+                          -- which case we can't reconstruct the dropped parameters
+        checkBody m n b
       where
         Perm _ p = fromMaybe __IMPOSSIBLE__ $ clausePerm cl
         ps       = namedClausePats cl

@@ -7,7 +7,6 @@ module Agda.Syntax.Internal.Defs where
 import Control.Monad.Reader
 import Control.Monad.Writer
 
-import Data.Foldable (Foldable)
 import qualified Data.Foldable as Fold
 
 import Agda.Syntax.Common
@@ -79,9 +78,12 @@ instance GetDefs Sort where
   getDefs s = case s of
     Type l    -> getDefs l
     Prop l    -> getDefs l
-    Inf       -> return ()
+    Inf _ _   -> return ()
+    SSet l    -> getDefs l
     SizeUniv  -> return ()
+    LockUniv  -> return ()
     PiSort a s  -> getDefs a >> getDefs s
+    FunSort s1 s2 -> getDefs s1 >> getDefs s2
     UnivSort s  -> getDefs s
     MetaS x es  -> getDefs x >> getDefs es
     DefS d es   -> doDef d >> getDefs es
@@ -92,13 +94,6 @@ instance GetDefs Level where
 
 instance GetDefs PlusLevel where
   getDefs (Plus _ l)    = getDefs l
-
-instance GetDefs LevelAtom where
-  getDefs a = case a of
-    MetaLevel x vs   -> getDefs x >> getDefs vs
-    BlockedLevel _ v -> getDefs v
-    NeutralLevel _ v -> getDefs v
-    UnreducedLevel v -> getDefs v
 
 -- collection instances
 

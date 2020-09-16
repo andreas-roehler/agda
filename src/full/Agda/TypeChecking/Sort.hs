@@ -22,6 +22,7 @@
 module Agda.TypeChecking.Sort where
 
 import Control.Monad
+import Control.Monad.Except
 
 import Data.Functor
 import Data.Maybe
@@ -49,7 +50,6 @@ import Agda.TypeChecking.Reduce
 import Agda.TypeChecking.Substitute
 import Agda.TypeChecking.Telescope
 
-import Agda.Utils.Except
 import Agda.Utils.Impossible
 import Agda.Utils.Lens
 import Agda.Utils.Monad
@@ -62,11 +62,13 @@ inferUnivSort
   => Sort -> m Sort
 inferUnivSort s = do
   s <- reduce s
-  ui <- univInf
-  case univSort' ui s of
+  case univSort' s of
     Just s' -> return s'
     Nothing -> do
-      addConstraint $ HasBiggerSort s
+      -- Jesper, 2020-04-19: With the addition of Setωᵢ and the PTS
+      -- rule SizeUniv : Setω, every sort (with no metas) now has a
+      -- bigger sort, so we do not need to add a constraint.
+      -- addConstraint $ HasBiggerSort s
       return $ UnivSort s
 
 sortFitsIn :: MonadConversion m => Sort -> Sort -> m ()
@@ -105,8 +107,8 @@ inferPiSort a s2 = do
   return $ piSort a' s2'
 
 -- | As @inferPiSort@, but for a nondependent function type.
-inferFunSort :: Dom Type -> Sort -> TCM Sort
-inferFunSort a s = inferPiSort a $ NoAbs underscore s
+inferFunSort :: Sort -> Sort -> TCM Sort
+inferFunSort s1 s2 = funSort <$> reduce s1 <*> reduce s2
 
 ptsRule :: Dom Type -> Abs Sort -> Sort -> TCM ()
 ptsRule a b c = do
@@ -116,7 +118,7 @@ ptsRule a b c = do
     (equalSort c' c)
 
 -- | Non-dependent version of ptsRule
-ptsRule' :: Dom Type -> Sort -> Sort -> TCM ()
+ptsRule' :: Sort -> Sort -> Sort -> TCM ()
 ptsRule' a b c = do
   c' <- inferFunSort a b
   ifM (optCumulativity <$> pragmaOptions)
@@ -138,12 +140,19 @@ checkTelePiSort :: Type -> TCM ()
 --  underAbstraction a b checkTelePiSort
 checkTelePiSort _ = return ()
 
-ifIsSort :: (MonadReduce m) => Type -> (Sort -> m a) -> m a -> m a
+ifIsSort :: (MonadReduce m, MonadError TCErr m) => Type -> (Sort -> m a) -> m a -> m a
 ifIsSort t yes no = do
-  t <- reduce t
-  case unEl t of
-    Sort s -> yes s
-    _      -> no
+  -- Jesper, 2020-09-06, subtle: do not use @abortIfBlocked@ here
+  -- since we want to take the yes branch whenever the type is a sort,
+  -- even if it is blocked.
+  bt <- reduceB t
+  case unEl (ignoreBlocking bt) of
+    Sort s                     -> yes s
+    _      | Blocked m _ <- bt -> patternViolation m
+           | otherwise         -> no
+
+ifNotSort :: (MonadReduce m, MonadError TCErr m) => Type -> m a -> (Sort -> m a) -> m a
+ifNotSort t = flip $ ifIsSort t
 
 -- | Result is in reduced form.
 shouldBeSort
@@ -155,7 +164,7 @@ shouldBeSort t = ifIsSort t return (typeError $ ShouldBeASort t)
 --
 --   Precondition: given term is a well-sorted type.
 sortOf
-  :: forall m. (MonadReduce m, MonadTCEnv m, MonadAddContext m, HasBuiltins m, HasConstInfo m)
+  :: forall m. (MonadReduce m, MonadError TCErr m, MonadTCEnv m, MonadAddContext m, HasBuiltins m, HasConstInfo m)
   => Term -> m Sort
 sortOf t = do
   reportSDoc "tc.sort" 40 $ "sortOf" <+> prettyTCM t
@@ -169,9 +178,7 @@ sortOf t = do
         sa <- sortOf a
         sb <- mapAbstraction adom (sortOf . unEl) b
         return $ piSort (adom $> El sa a) sb
-      Sort s     -> do
-        ui <- univInf
-        return $ univSort ui s
+      Sort s     -> return $ univSort s
       Var i es   -> do
         a <- typeOfBV i
         sortOfE a (Var i) es
@@ -190,7 +197,14 @@ sortOf t = do
 
     sortOfE :: Type -> (Elims -> Term) -> Elims -> m Sort
     sortOfE a hd []     = ifIsSort a return __IMPOSSIBLE__
-    sortOfE a hd (e:es) = case e of
+    sortOfE a hd (e:es) = do
+     reportSDoc "tc.sort" 50 $ vcat
+       [ "sortOfE"
+       , "  a  = " <+> prettyTCM a
+       , "  hd = " <+> prettyTCM (hd [])
+       , "  e  = " <+> prettyTCM e
+       ]
+     case e of
       Apply (Arg ai v) -> ifNotPiType a __IMPOSSIBLE__ $ \b c -> do
         sortOfE (c `absApp` v) (hd . (e:)) es
       Proj o f -> do

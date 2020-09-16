@@ -1,5 +1,3 @@
-{-# LANGUAGE UndecidableInstances #-}
-
 -- | A syntactic equality check that takes meta instantiations into account,
 --   but does not reduce.  It replaces
 --   @
@@ -11,19 +9,16 @@
 
 module Agda.TypeChecking.SyntacticEquality (SynEq, checkSyntacticEquality) where
 
-import Prelude hiding (mapM)
-
 import Control.Arrow ((***))
-import Control.Monad.State hiding (mapM)
+import Control.Monad.State
 
 import Agda.Interaction.Options (optSyntacticEquality)
 
 import Agda.Syntax.Common
 import Agda.Syntax.Internal
 
-import Agda.TypeChecking.Monad (ReduceM, MonadReduce(..), pragmaOptions)
+import Agda.TypeChecking.Monad (ReduceM, MonadReduce(..), pragmaOptions, isInstantiatedMeta)
 import Agda.TypeChecking.Reduce
-import Agda.TypeChecking.Reduce.Monad
 import Agda.TypeChecking.Substitute
 
 import Agda.Utils.Monad (ifM)
@@ -70,7 +65,7 @@ pure2 :: Applicative f => a -> f (a, a)
 pure2 a = pure (a, a)
 
 (<**>) :: Applicative f => f (a -> b, a -> b) -> f (a, a) -> f (b, b)
-ff <**> xx = pure (uncurry (***)) <*> ff <*> xx
+ff <**> xx = (uncurry (***)) <$> ff <*> xx
 
 -- | Instantiate full as long as things are equal
 class SynEq a where
@@ -79,7 +74,7 @@ class SynEq a where
   synEq' a a' = ifEqual (uncurry synEq) (a, a')
 
 instance SynEq Bool where
-  synEq x y | x == y = return (x, y)
+  synEq x y | x == y    = return (x, y)
   synEq x y | otherwise = inequal (x, y)
 
 -- | Syntactic term equality ignores 'DontCare' stuff.
@@ -115,35 +110,19 @@ instance SynEq PlusLevel where
     | n == n'   = Plus n <$$> synEq v v'
     | otherwise = inequal (l, l')
 
-instance SynEq LevelAtom where
-  synEq l l' = do
-    l  <- lift (unBlock =<< instantiate' l)
-    case (l, l') of
-      (MetaLevel m vs  , MetaLevel m' vs'  ) | m == m' -> MetaLevel m    <$$> synEq vs vs'
-      (UnreducedLevel v, UnreducedLevel v' )           -> UnreducedLevel <$$> synEq v v'
-      -- The reason for being blocked should not matter for equality.
-      (NeutralLevel r v, NeutralLevel r' v')           -> NeutralLevel r <$$> synEq v v'
-      (BlockedLevel m v, BlockedLevel m' v')           -> BlockedLevel m <$$> synEq v v'
-      _ -> inequal (l, l')
-    where
-      unBlock l =
-        case l of
-          BlockedLevel m v ->
-            ifM (isInstantiatedMeta m)
-                (pure $ UnreducedLevel v)
-                (pure l)
-          _ -> pure l
-
 instance SynEq Sort where
   synEq s s' = do
     (s, s') <- lift $ instantiate' (s, s')
     case (s, s') of
       (Type l  , Type l'   ) -> Type <$$> synEq l l'
       (PiSort a b, PiSort a' b') -> piSort <$$> synEq a a' <**> synEq' b b'
+      (FunSort a b, FunSort a' b') -> funSort <$$> synEq a a' <**> synEq' b b'
       (UnivSort a, UnivSort a') -> UnivSort <$$> synEq a a'
       (SizeUniv, SizeUniv  ) -> pure2 s
+      (LockUniv, LockUniv  ) -> pure2 s
       (Prop l  , Prop l'   ) -> Prop <$$> synEq l l'
-      (Inf     , Inf       ) -> pure2 s
+      (Inf f m , Inf f' n) | f == f', m == n -> pure2 s
+      (SSet l  , SSet l'   ) -> SSet <$$> synEq l l'
       (MetaS x es , MetaS x' es') | x == x' -> MetaS x <$$> synEq es es'
       (DefS  d es , DefS  d' es') | d == d' -> DefS d  <$$> synEq es es'
       (DummyS{}, DummyS{}) -> pure (s, s')
@@ -167,7 +146,7 @@ instance SynEq a => SynEq (Elim' a) where
                           -> (IApply u v *** IApply u' v') <$> synEq r r'
       _                   -> inequal (e, e')
 
-instance (Subst t a, SynEq a) => SynEq (Abs a) where
+instance (Subst a, SynEq a) => SynEq (Abs a) where
   synEq a a' =
     case (a, a') of
       (NoAbs x b, NoAbs x' b') -> (NoAbs x *** NoAbs x') <$>  synEq b b'
@@ -186,6 +165,6 @@ instance SynEq a => SynEq (Dom a) where
     | otherwise = inequal (d, d')
 
 instance SynEq ArgInfo where
-  synEq ai@(ArgInfo h r o _) ai'@(ArgInfo h' r' o' _)
-    | h == h', r == r' = pure2 ai
+  synEq ai@(ArgInfo h r o _ a) ai'@(ArgInfo h' r' o' _ a')
+    | h == h', r == r', a == a' = pure2 ai
     | otherwise        = inequal (ai, ai')

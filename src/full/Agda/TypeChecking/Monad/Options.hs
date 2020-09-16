@@ -1,9 +1,8 @@
 
 module Agda.TypeChecking.Monad.Options where
 
-import Prelude hiding (mapM)
-
-import Control.Monad.Reader hiding (mapM)
+import Control.Monad.Except
+import Control.Monad.Reader
 import Control.Monad.Writer
 
 import Data.Maybe
@@ -11,7 +10,7 @@ import Data.Maybe
 import System.Directory
 import System.FilePath
 
-import {-# SOURCE #-} Agda.TypeChecking.Monad.Debug
+import Agda.TypeChecking.Monad.Debug (reportSDoc)
 import Agda.TypeChecking.Warnings
 import Agda.TypeChecking.Monad.Base
 import Agda.TypeChecking.Monad.State
@@ -22,7 +21,7 @@ import Agda.Interaction.Library
 import Agda.Utils.FileName
 import Agda.Utils.Maybe
 import Agda.Utils.Pretty
-import Agda.Utils.Except
+import Agda.Utils.WithDefault
 
 import Agda.Utils.Impossible
 
@@ -32,8 +31,7 @@ setPragmaOptions :: PragmaOptions -> TCM ()
 setPragmaOptions opts = do
   stPragmaOptions `modifyTCLens` Lens.mapSafeMode (Lens.getSafeMode opts ||)
   clo <- commandLineOptions
-  let unsafe = unsafePragmaOptions opts
---  when (Lens.getSafeMode clo && not (null unsafe)) $ warning $ SafeFlagPragma unsafe
+  let unsafe = unsafePragmaOptions clo opts
   when (Lens.getSafeMode opts && not (null unsafe)) $ warning $ SafeFlagPragma unsafe
   ok <- liftIO $ runOptM $ checkOpts (clo { optPragmaOptions = opts })
   case ok of
@@ -97,8 +95,7 @@ setLibraryPaths root o =
 
 setLibraryIncludes :: CommandLineOptions -> TCM CommandLineOptions
 setLibraryIncludes o
-  | or [ not $ optUseLibs o
-       , optShowVersion o ] = pure o
+  | not (optUseLibs o) || optShowVersion o = pure o
   | otherwise = do
     let libs = optLibraries o
     installed <- libToTCM $ getInstalledLibraries (optOverrideLibrariesFile o)
@@ -111,12 +108,24 @@ addDefaultLibraries
   -> CommandLineOptions
   -> TCM CommandLineOptions
 addDefaultLibraries root o
-  | or [ not $ null $ optLibraries o
-       , not $ optUseLibs o
-       , optShowVersion o ] = pure o
+  | not (null $ optLibraries o) || not (optUseLibs o) || optShowVersion o = pure o
   | otherwise = do
   (libs, incs) <- libToTCM $ getDefaultLibraries (filePath root) (optDefaultLibs o)
   return o{ optIncludePaths = incs ++ optIncludePaths o, optLibraries = libs }
+
+addTrustedExecutables
+  :: CommandLineOptions
+  -> TCM CommandLineOptions
+addTrustedExecutables o
+  | optShowVersion o = do
+  return o
+  | otherwise = do
+  trustedExes <- libToTCM $ getTrustedExecutables
+  -- Wen, 2020-06-03
+  -- Replace the map wholesale instead of computing the union because this function
+  -- should never be called more than once, and doing so either has the same result
+  -- or is a security risk.
+  return o{ optTrustedExecutables = trustedExes }
 
 setOptionsFromPragma :: OptionsPragma -> TCM ()
 setOptionsFromPragma ps = do
@@ -139,18 +148,6 @@ disableDisplayForms =
 -- | Check if display forms are enabled.
 displayFormsEnabled :: MonadTCEnv m => m Bool
 displayFormsEnabled = asksTC envDisplayFormsEnabled
-
--- | Gets the include directories.
---
--- Precondition: 'optAbsoluteIncludePaths' must be nonempty (i.e.
--- 'setCommandLineOptions' must have run).
-
-getIncludeDirs :: HasOptions m => m [AbsolutePath]
-getIncludeDirs = do
-  incs <- optAbsoluteIncludePaths <$> commandLineOptions
-  case incs of
-    [] -> __IMPOSSIBLE__
-    _  -> return incs
 
 -- | Makes the given directories absolute and stores them as include
 -- directories.
@@ -228,17 +225,17 @@ getInputFile' = mapM (liftIO . absolute) =<< do
   optInputFile <$> commandLineOptions
 
 hasInputFile :: HasOptions m => m Bool
-hasInputFile = isJust <$> optInputFile <$> commandLineOptions
+hasInputFile = isJust . optInputFile <$> commandLineOptions
 
 isPropEnabled :: HasOptions m => m Bool
 isPropEnabled = optProp <$> pragmaOptions
 
+isTwoLevelEnabled :: HasOptions m => m Bool
+isTwoLevelEnabled = collapseDefault . optTwoLevel <$> pragmaOptions
+
 {-# SPECIALIZE hasUniversePolymorphism :: TCM Bool #-}
 hasUniversePolymorphism :: HasOptions m => m Bool
 hasUniversePolymorphism = optUniversePolymorphism <$> pragmaOptions
-
-enableCaching :: HasOptions m => m Bool
-enableCaching = optCaching <$> pragmaOptions
 
 showImplicitArguments :: HasOptions m => m Bool
 showImplicitArguments = optShowImplicit <$> pragmaOptions

@@ -27,7 +27,6 @@ import Control.Monad ( guard )
 import Text.Read ( readMaybe )
 import Data.Set (Set)
 import qualified Data.Set as Set
-import Data.Maybe ( fromMaybe )
 import Data.List ( stripPrefix, intercalate )
 
 import Agda.Utils.Lens
@@ -111,6 +110,7 @@ errorWarnings = Set.fromList
   , SafeFlagNoPositivityCheck_
   , SafeFlagPolarity_
   , SafeFlagNoUniverseCheck_
+  , SafeFlagEta_
   , SafeFlagInjective_
   , SafeFlagNoCoverageCheck_
   , TerminationIssue_
@@ -121,6 +121,10 @@ errorWarnings = Set.fromList
   , CoInfectiveImport_
   , RewriteNonConfluent_
   , RewriteMaybeNonConfluent_
+  , RewriteAmbiguousRules_
+  , RewriteMissingRule_
+  , ExeNotFoundWarning_
+  , ExeNotExecutableWarning_
   ]
 
 allWarnings :: Set WarningName
@@ -153,6 +157,7 @@ data WarningName
   | EmptyPrimitive_
   | EmptyPrivate_
   | EmptyRewritePragma_
+  | EmptyWhere_
   | InvalidCatchallPragma_
   | InvalidCoverageCheckPragma_
   | InvalidNoPositivityCheckPragma_
@@ -174,13 +179,16 @@ data WarningName
   | UselessPrivate_
   -- Scope and Type Checking Warnings
   | AbsurdPatternRequiresNoRHS_
+  | AsPatternShadowsConstructorOrPatternSynonym_
   | CantGeneralizeOverSorts_
   | ClashesViaRenaming_                -- issue #4154
   | CoverageIssue_
   | CoverageNoExactSplit_
   | DeprecationWarning_
+  | DuplicateUsing_
   | FixityInRenamingModule_
   | GenericNonFatalError_
+  | GenericUseless_
   | GenericWarning_
   | IllformedAsClause_
   | InstanceArgWithExplicitArg_
@@ -194,6 +202,9 @@ data WarningName
   | PragmaCompileErased_
   | RewriteMaybeNonConfluent_
   | RewriteNonConfluent_
+  | RewriteAmbiguousRules_
+  | RewriteMissingRule_
+  | SafeFlagEta_
   | SafeFlagInjective_
   | SafeFlagNoCoverageCheck_
   | SafeFlagNonTerminating_
@@ -209,7 +220,9 @@ data WarningName
   | UnsolvedConstraints_
   | UnsolvedInteractionMetas_
   | UnsolvedMetaVariables_
+  | UselessHiding_
   | UselessInline_
+  | UselessPatternDeclarationForRecord_
   | UselessPublic_
   | UserWarning_
   | WithoutKFlagPrimEraseEquality_
@@ -217,6 +230,12 @@ data WarningName
   -- Checking consistency of options
   | CoInfectiveImport_
   | InfectiveImport_
+  -- Record field warnings
+  | DuplicateFieldsWarning_
+  | TooManyFieldsWarning_
+  -- System call warnings
+  | ExeNotFoundWarning_
+  | ExeNotExecutableWarning_
   deriving (Eq, Ord, Show, Read, Enum, Bounded)
 
 -- | The flag corresponding to a warning is precisely the name of the constructor
@@ -243,11 +262,18 @@ usageWarning = intercalate "\n"
   , ""
   , untable (fmap (fst &&& snd . snd) warningSets)
   , "Individual warnings can be turned on and off by -W Name and\
-    \ -W noName respectively. The flags available are:"
+    \ -W noName, respectively, where Name comes from the following\
+    \ list (warnings marked with 'd' are turned on by default, and 'b'\
+    \ stands for \"benign warning\"):"
   , ""
   , untable $ forMaybe [minBound..maxBound] $ \ w ->
     let wnd = warningNameDescription w in
-    (warningName2String w, wnd) <$ guard (not $ null wnd)
+    ( warningName2String w
+    , (if w `Set.member` usualWarnings then "d" else " ") ++
+      (if not (w `Set.member` errorWarnings) then "b" else " ") ++
+      " " ++
+      wnd
+    ) <$ guard (not $ null wnd)
   ]
 
   where
@@ -262,7 +288,7 @@ usageWarning = intercalate "\n"
 -- Leave String empty to skip that name.
 
 warningNameDescription :: WarningName -> String
-warningNameDescription w = case w of
+warningNameDescription = \case
   -- Parser Warnings
   OverlappingTokensWarning_        -> "Multi-line comments spanning one or more literate text blocks."
   -- Library Warnings
@@ -278,6 +304,7 @@ warningNameDescription w = case w of
   EmptyPrimitive_                  -> "Empty `primitive' blocks."
   EmptyPrivate_                    -> "Empty `private' blocks."
   EmptyRewritePragma_              -> "Empty `REWRITE' pragmas."
+  EmptyWhere_                      -> "Empty `where' blocks."
   InvalidCatchallPragma_           -> "`CATCHALL' pragmas before a non-function clause."
   InvalidCoverageCheckPragma_      -> "Coverage checking pragmas before non-function or `mutual' blocks."
   InvalidNoPositivityCheckPragma_  -> "No positivity checking pragmas before non-`data', `record' or `mutual' blocks."
@@ -295,18 +322,22 @@ warningNameDescription w = case w of
   UnknownNamesInFixityDecl_        -> "Names not declared in the same scope as their syntax or fixity declaration."
   UnknownNamesInPolarityPragmas_   -> "Names not declared in the same scope as their polarity pragmas."
   UselessAbstract_                 -> "`abstract' blocks where they have no effect."
+  UselessHiding_                   -> "Names in `hiding' directive that are anyway not imported."
   UselessInline_                   -> "`INLINE' pragmas where they have no effect."
   UselessInstance_                 -> "`instance' blocks where they have no effect."
   UselessPrivate_                  -> "`private' blocks where they have no effect."
   UselessPublic_                   -> "`public' blocks where they have no effect."
+  UselessPatternDeclarationForRecord_ -> "`pattern' attributes where they have no effect."
   -- Scope and Type Checking Warnings
   AbsurdPatternRequiresNoRHS_      -> "A clause with an absurd pattern does not need a Right Hand Side."
+  AsPatternShadowsConstructorOrPatternSynonym_ -> "@-patterns that shadow constructors or pattern synonyms."
   CantGeneralizeOverSorts_         -> "Attempt to generalize over sort metas in 'variable' declaration."
   ClashesViaRenaming_              -> "Clashes introduced by `renaming'."  -- issue #4154
   CoverageIssue_                   -> "Failed coverage checks."
   CoverageNoExactSplit_            -> "Failed exact split checks."
   DeprecationWarning_              -> "Feature deprecation."
   GenericNonFatalError_            -> ""
+  GenericUseless_                  -> "Useless code."
   GenericWarning_                  -> ""
   IllformedAsClause_               -> "Illformed `as'-clauses in `import' statements."
   InstanceNoOutputTypeName_        -> "instance arguments whose type does not end in a named or variable type are never considered by instance search."
@@ -314,13 +345,17 @@ warningNameDescription w = case w of
   InstanceWithExplicitArg_         -> "`instance` declarations with explicit arguments are never considered by instance search."
   InversionDepthReached_           -> "Inversions of pattern-matching failed due to exhausted inversion depth."
   ModuleDoesntExport_              -> "Imported name is not actually exported."
+  DuplicateUsing_                  -> "Repeated names in using directive."
   FixityInRenamingModule_          -> "Found fixity annotation in renaming directive for module."
-  NotInScope_                      -> "Out of scope name"
+  NotInScope_                      -> "Out of scope name."
   NotStrictlyPositive_             -> "Failed strict positivity checks."
   OldBuiltin_                      -> "Deprecated `BUILTIN' pragmas."
   PragmaCompileErased_             -> "`COMPILE' pragma targeting an erased symbol."
-  RewriteMaybeNonConfluent_      -> "Failed confluence checks while computing overlap."
-  RewriteNonConfluent_           -> "Failed confluence checks while joining critical pairs."
+  RewriteMaybeNonConfluent_        -> "Failed local confluence check while computing overlap."
+  RewriteNonConfluent_             -> "Failed local confluence check while joining critical pairs."
+  RewriteAmbiguousRules_           -> "Failed global confluence check because of overlapping rules."
+  RewriteMissingRule_              -> "Failed global confluence check because of missing rule."
+  SafeFlagEta_                     -> "`ETA' pragmas with the safe flag."
   SafeFlagInjective_               -> "`INJECTIVE' pragmas with the safe flag."
   SafeFlagNoCoverageCheck_         -> "`NON_COVERING` pragmas with the safe flag."
   SafeFlagNonTerminating_          -> "`NON_TERMINATING' pragmas with the safe flag."
@@ -342,3 +377,9 @@ warningNameDescription w = case w of
   -- Checking consistency of options
   CoInfectiveImport_               -> "Importing a file not using e.g. `--safe'  from one which does."
   InfectiveImport_                 -> "Importing a file using e.g. `--cubical' into one which doesn't."
+  -- Record field warnings
+  DuplicateFieldsWarning_          -> "Record expression with duplicate field names."
+  TooManyFieldsWarning_            -> "Record expression with invalid field names."
+  -- System call warnings
+  ExeNotFoundWarning_              -> "Trusted executable cannot be found."
+  ExeNotExecutableWarning_         -> "Trusted executable does not have permission to execute."

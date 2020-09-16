@@ -21,8 +21,8 @@ module Agda.Interaction.FindFile
 import Prelude hiding (null)
 
 import Control.Monad
+import Control.Monad.Except
 import Control.Monad.Trans
-import qualified Data.List as List
 import Data.Maybe (catMaybes)
 import qualified Data.Map as Map
 import System.FilePath
@@ -39,16 +39,20 @@ import Agda.Interaction.Options ( optLocalInterfaces )
 import Agda.TypeChecking.Monad.Base
 import Agda.TypeChecking.Monad.Benchmark (billTo)
 import qualified Agda.TypeChecking.Monad.Benchmark as Bench
-import {-# SOURCE #-} Agda.TypeChecking.Monad.Options (getIncludeDirs)
 import Agda.TypeChecking.Warnings (runPM)
 
-import Agda.Utils.Applicative ( (?$>) )
-import Agda.Utils.Except
-import Agda.Utils.FileName
-import Agda.Utils.List ( stripSuffix, nubOn )
-import Agda.Utils.Monad ( ifM )
-import Agda.Utils.Impossible
 import Agda.Version ( version )
+
+import Agda.Utils.Applicative ( (?$>) )
+import Agda.Utils.FileName
+import Agda.Utils.List  ( stripSuffix, nubOn )
+import Agda.Utils.List1 ( List1, pattern (:|) )
+import qualified Agda.Utils.List1 as List1
+import Agda.Utils.Monad ( ifM, unlessM )
+import Agda.Utils.Pretty ( prettyShow )
+import Agda.Utils.Singleton
+
+import Agda.Utils.Impossible
 
 -- | Type aliases for source files and interface files.
 --   We may only produce one of these if we know for sure that the file
@@ -72,7 +76,7 @@ mkInterfaceFile fp = do
 -- | Converts an Agda file name to the corresponding interface file
 --   name. Note that we do not guarantee that the file exists.
 
-toIFile :: SourceFile -> TCM AbsolutePath
+toIFile :: (HasOptions m, MonadIO m) => SourceFile -> m AbsolutePath
 toIFile (SourceFile src) = do
   let fp = filePath src
   mroot <- ifM (optLocalInterfaces <$> commandLineOptions)
@@ -169,8 +173,9 @@ findFile'' dirs m modFile =
 -- Raises 'Nothing' if the the interface file cannot be found.
 
 findInterfaceFile'
-  :: SourceFile                 -- ^ Path to the source file
-  -> TCM (Maybe InterfaceFile)  -- ^ Maybe path to the interface file
+  :: (HasOptions m, MonadIO m)
+  => SourceFile                 -- ^ Path to the source file
+  -> m (Maybe InterfaceFile)    -- ^ Maybe path to the interface file
 findInterfaceFile' fp = liftIO . mkInterfaceFile =<< toIFile fp
 
 -- | Finds the interface file corresponding to a given top-level
@@ -209,9 +214,7 @@ checkModuleName name (SourceFile file) mexpected =
     Right src -> do
       let file' = srcFilePath src
       file <- liftIO $ absolute (filePath file)
-      if file === file' then
-        return ()
-       else
+      unlessM (liftIO $ sameFile file file') $
         typeError $ ModuleDefinedInOtherFile name file file'
 
 -- | Computes the module name of the top-level module in the given
@@ -231,26 +234,26 @@ moduleName
   -> TCM TopLevelModuleName
 moduleName file parsedModule = billTo [Bench.ModuleName] $
   case moduleNameParts name of
-    ["_"] -> do
+    "_" :| [] -> do
       m <- runPM (parse moduleNameParser defaultName)
              `catchError` \_ ->
            typeError $ GenericError $
-             "The file name " ++ show file ++
+             "The file name " ++ prettyShow file ++
              " is invalid because it does not correspond to a valid module name."
       case m of
         Qual {} ->
           typeError $ GenericError $
-            "The file name " ++ show file ++ " is invalid because " ++
+            "The file name " ++ prettyShow file ++ " is invalid because " ++
             defaultName ++ " is not an unqualified module name."
         QName {} ->
-          return $ TopLevelModuleName (getRange m) [defaultName]
+          return $ TopLevelModuleName (getRange m) $ singleton defaultName
     _ -> return name
   where
   name        = topLevelModuleName parsedModule
   defaultName = rootNameModule file
 
 parseFileExtsShortList :: [String]
-parseFileExtsShortList = [".agda"] ++ literateExtsShortList
+parseFileExtsShortList = ".agda" : literateExtsShortList
 
 dropAgdaExtension :: String -> String
 dropAgdaExtension s = case catMaybes [ stripSuffix ext s

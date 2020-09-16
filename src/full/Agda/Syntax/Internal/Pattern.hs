@@ -1,5 +1,4 @@
-{-# LANGUAGE TypeFamilies           #-}  -- because of type equality ~
-{-# LANGUAGE UndecidableInstances   #-}  -- because of func. deps.
+{-# LANGUAGE TypeFamilies #-}
 
 module Agda.Syntax.Internal.Pattern where
 
@@ -11,7 +10,6 @@ import Data.Monoid
 import qualified Data.List as List
 
 import Agda.Syntax.Common
-import Agda.Syntax.Abstract (IsProjP(..))
 import Agda.Syntax.Internal
 
 import Agda.Utils.List
@@ -56,39 +54,50 @@ instance {-# OVERLAPPING #-} FunArity [Clause] where
 
 -- | Label the pattern variables from left to right
 --   using one label for each variable pattern and one for each dot pattern.
-class LabelPatVars a b i | b -> i where
-  labelPatVars :: a -> State [i] b
+class LabelPatVars a b where
+  type PatVarLabel b
+  labelPatVars :: a -> State [PatVarLabel b] b
   unlabelPatVars :: b -> a
   -- ^ Intended, but unpractical due to the absence of type-level lambda, is:
   --   @labelPatVars :: f (Pattern' x) -> State [i] (f (Pattern' (i,x)))@
 
   default labelPatVars
-    :: (Traversable f, LabelPatVars a' b' i, f a' ~ a, f b' ~ b)
-    => a -> State [i] b
+    :: (Traversable f
+      , LabelPatVars a' b'
+      , PatVarLabel b ~  PatVarLabel b'
+      , f a' ~ a, f b' ~ b)
+    => a -> State [PatVarLabel b] b
   labelPatVars = traverse labelPatVars
 
   default unlabelPatVars
-    :: (Traversable f, LabelPatVars a' b' i, f a' ~ a, f b' ~ b)
+    :: (Traversable f, LabelPatVars a' b', f a' ~ a, f b' ~ b)
     => b -> a
   unlabelPatVars = fmap unlabelPatVars
 
-instance LabelPatVars a b i => LabelPatVars (Arg a) (Arg b) i         where
-instance LabelPatVars a b i => LabelPatVars (Named x a) (Named x b) i where
-instance LabelPatVars a b i => LabelPatVars [a] [b] i                 where
+instance LabelPatVars a b => LabelPatVars (Arg a) (Arg b) where
+  type PatVarLabel (Arg b) = PatVarLabel b
 
-instance LabelPatVars Pattern DeBruijnPattern Int where
-  labelPatVars p =
-    case p of
-      VarP o x     -> do i <- next
-                         return $ VarP o (DBPatVar x i)
-      DotP o t     -> DotP o t <$ next
-      ConP c mt ps -> ConP c mt <$> labelPatVars ps
-      DefP o q ps -> DefP o q <$> labelPatVars ps
-      LitP o l     -> return $ LitP o l
-      ProjP o q    -> return $ ProjP o q
-      IApplyP o u t x -> do i <- next
-                            return $ IApplyP o u t (DBPatVar x i)
-    where next = caseListM get __IMPOSSIBLE__ $ \ x xs -> do put xs; return x
+instance LabelPatVars a b => LabelPatVars (Named x a) (Named x b) where
+  type PatVarLabel (Named x b) = PatVarLabel b
+
+instance LabelPatVars a b => LabelPatVars [a] [b] where
+  type PatVarLabel [b] = PatVarLabel b
+
+instance LabelPatVars Pattern DeBruijnPattern where
+  type PatVarLabel DeBruijnPattern = Int
+
+  labelPatVars p = case p of
+    VarP o x        -> VarP o . DBPatVar x <$> next
+    DotP o t        -> DotP o t <$ next
+    ConP c mt ps    -> ConP c mt <$> labelPatVars ps
+    DefP o q  ps    -> DefP o q <$> labelPatVars ps
+    LitP  o l       -> return $ LitP o l
+    ProjP o q       -> return $ ProjP o q
+    IApplyP o u t x -> IApplyP o u t . DBPatVar x <$> next
+   where
+    next = caseListM get __IMPOSSIBLE__ $ \x xs -> do
+      put xs
+      return x
   unlabelPatVars = fmap dbPatVarName
 
 -- | Augment pattern variables with their de Bruijn index.
@@ -107,11 +116,11 @@ instance LabelPatVars Pattern DeBruijnPattern Int where
 --    dBpats    = 3 .(suc 2) (cons 2 1 0 )
 --  @
 --
-numberPatVars :: LabelPatVars a b Int => Int -> Permutation -> a -> b
+numberPatVars :: (LabelPatVars a b, PatVarLabel b ~ Int) => Int -> Permutation -> a -> b
 numberPatVars err perm ps = evalState (labelPatVars ps) $
   permPicks $ flipP $ invertP err perm
 
-unnumberPatVars :: LabelPatVars a b i => b -> a
+unnumberPatVars :: LabelPatVars a b => b -> a
 unnumberPatVars = unlabelPatVars
 
 dbPatPerm :: [NamedArg DeBruijnPattern] -> Maybe Permutation
@@ -130,7 +139,7 @@ dbPatPerm' countDots ps = Perm (size ixs) <$> picks
   where
     ixs   = concatMap (getIndices . namedThing . unArg) ps
     n     = size $ catMaybes ixs
-    picks = forM (downFrom n) $ \ i -> List.findIndex (Just i ==) ixs
+    picks = forM (downFrom n) $ \ i -> List.elemIndex (Just i) ixs
 
     getIndices :: DeBruijnPattern -> [Maybe Int]
     getIndices (VarP _ x)    = [Just $ dbPatVarIndex x]
@@ -311,17 +320,21 @@ instance CountPatternVars (Pattern' x) where
 
 -- Computing modalities of pattern variables ------------------------------
 
-class PatternVarModalities p x | p -> x where
+class PatternVarModalities p where
+  type PatVar p
   -- | Get the list of pattern variables annotated with modalities.
-  patternVarModalities :: p -> [(x, Modality)]
+  patternVarModalities :: p -> [(PatVar p, Modality)]
 
-instance PatternVarModalities a x => PatternVarModalities [a] x where
+instance PatternVarModalities a => PatternVarModalities [a] where
+  type PatVar [a] = PatVar a
   patternVarModalities = foldMap patternVarModalities
 
-instance PatternVarModalities a x => PatternVarModalities (Named s a) x where
+instance PatternVarModalities a => PatternVarModalities (Named s a) where
+  type PatVar (Named s a) = PatVar a
   patternVarModalities = foldMap patternVarModalities
 
-instance PatternVarModalities a x => PatternVarModalities (Arg a) x where
+instance PatternVarModalities a => PatternVarModalities (Arg a) where
+  type PatVar (Arg a) = PatVar a
   patternVarModalities arg = map (second (m <>)) (patternVarModalities $ unArg arg)
     where m = getModality arg
 
@@ -331,7 +344,8 @@ instance PatternVarModalities a x => PatternVarModalities (Arg a) x where
 --   patternVarModalities (IApply x y p) = patternVarModalities [x, y, p]
 --   patternVarModalities Proj{}    = []
 
-instance PatternVarModalities (Pattern' x) x where
+instance PatternVarModalities (Pattern' x) where
+  type PatVar (Pattern' x) = x
   patternVarModalities p =
     case p of
       VarP _ x    -> [(x, defaultModality)]

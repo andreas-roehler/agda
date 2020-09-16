@@ -14,14 +14,12 @@ import qualified Data.Map as Map
 
 import Agda.Syntax.Common
 import Agda.Syntax.Internal as I
-import Agda.Syntax.Abstract.Name (QName)
 import Agda.Syntax.Position
 import Agda.Syntax.Treeless
 import Agda.Syntax.Literal
 
 import Agda.TypeChecking.Substitute
 import Agda.TypeChecking.Monad as I
-import Agda.TypeChecking.Monad.Builtin
 import Agda.TypeChecking.Telescope
 import Agda.TypeChecking.Datatypes
 import Agda.TypeChecking.Pretty
@@ -176,11 +174,11 @@ pruneUnreachable x CTInt d bs = return $ pruneIntCase x d bs IntSet.empty
 pruneUnreachable _ _ d bs = pure (d, bs)
 
 -- These are the guards we generate for Int/Nat pattern matching
-pattern Below :: Range -> Int -> Integer -> TTerm
-pattern Below r x n = TApp (TPrim PLt)  [TVar x, TLit (LitNat r n)]
+pattern Below :: Int -> Integer -> TTerm
+pattern Below x n = TApp (TPrim PLt)  [TVar x, TLit (LitNat n)]
 
-pattern Above :: Range -> Int -> Integer -> TTerm
-pattern Above r x n = TApp (TPrim PGeq) [TVar x, TLit (LitNat r n)]
+pattern Above :: Int -> Integer -> TTerm
+pattern Above x n = TApp (TPrim PGeq) [TVar x, TLit (LitNat n)]
 
 -- | Strip unreachable clauses (replace by tUnreachable for the default).
 --   Fourth argument is the set of ints covered so far.
@@ -192,9 +190,9 @@ pruneIntCase x d bs cover = go bs cover
       | otherwise            = (d, [])
     go (b : bs) cover =
       case b of
-        TAGuard (Below _ y n) _ | x == y -> rec (IntSet.below n)
-        TAGuard (Above _ y n) _ | x == y -> rec (IntSet.above n)
-        TALit (LitNat _ n) _             -> rec (IntSet.singleton n)
+        TAGuard (Below y n) _ | x == y -> rec (IntSet.below n)
+        TAGuard (Above y n) _ | x == y -> rec (IntSet.above n)
+        TALit (LitNat n) _             -> rec (IntSet.singleton n)
         _                                -> second (b :) $ go bs cover
       where
         rec this = second addAlt $ go bs cover'
@@ -203,7 +201,7 @@ pruneIntCase x d bs cover = go bs cover
             cover' = this' <> cover
             addAlt = case IntSet.toFiniteList this' of
                        Just []  -> id                                     -- unreachable case
-                       Just [n] -> (TALit (LitNat noRange n) (aBody b) :) -- possibly refined case
+                       Just [n] -> (TALit (LitNat n) (aBody b) :) -- possibly refined case
                        _        -> (b :)                                  -- unchanged case
 
 data TypeInfo = Empty | Erasable | NotErasable
@@ -286,10 +284,10 @@ getTypeInfo t0 = do
     Sort{}    -> return Erasable
     _         -> return NotErasable
   is <- mapM (getTypeInfo . snd . dget) tel
-  let e | any (== Empty) is = Erasable
-        | null is           = et        -- TODO: guard should really be "all inhabited is"
-        | et == Empty       = Erasable
-        | otherwise         = et
+  let e | Empty `elem` is = Erasable
+        | null is         = et        -- TODO: guard should really be "all inhabited is"
+        | et == Empty     = Erasable
+        | otherwise       = et
   lift $ reportSDoc "treeless.opt.erase.type" 50 $ prettyTCM t0 <+> text ("is " ++ show e)
   return e
   where
@@ -299,10 +297,10 @@ getTypeInfo t0 = do
       msizes <- lift $ mapM getBuiltinName
                          [builtinSize, builtinSizeLt]
       def    <- lift $ getConstInfo q
-      mcs    <- return $ case I.theDef def of
-        I.Datatype{ dataCons = cs } -> Just cs
-        I.Record{ recConHead = c }  -> Just [conName c]
-        _                           -> Nothing
+      let mcs = case I.theDef def of
+                  I.Datatype{ dataCons = cs } -> Just cs
+                  I.Record{ recConHead = c }  -> Just [conName c]
+                  _                           -> Nothing
       case mcs of
         _ | Just q `elem` msizes -> return Erasable
         Just [c] -> do

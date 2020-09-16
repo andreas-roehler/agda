@@ -30,7 +30,6 @@ import Agda.TypeChecking.Conversion
 import Agda.TypeChecking.Datatypes -- (getConType, getFullyAppliedConType)
 import Agda.TypeChecking.Level
 import Agda.TypeChecking.Monad
-import Agda.TypeChecking.Monad.Builtin
 import Agda.TypeChecking.Pretty
 import Agda.TypeChecking.ProjectionLike (elimView)
 import Agda.TypeChecking.Records (getDefType)
@@ -233,16 +232,17 @@ fullyApplyCon
        --   type of the full application.
   -> m a
 fullyApplyCon c vs t0 ret = do
-  TelV tel t <- telView t0
+  (TelV tel t, boundary) <- telViewPathBoundaryP t0
   -- The type of the constructor application may still be a function
   -- type.  In this case, we introduce the domains @tel@ into the context
   -- and apply the constructor to these fresh variables.
-  addContext tel $ ifBlocked t (\m t -> patternViolation) $ \_ t -> do
+  addContext tel $ do
+    t <- abortIfBlocked t
     getFullyAppliedConType c t >>= \case
       Nothing ->
         typeError $ DoesNotConstructAnElementOf (conName c) t
       Just ((d, dt, pars), a) ->
-        ret d dt pars a (raise (size tel) vs ++ map Apply (teleArgs tel)) tel t
+        ret d dt pars a (raise (size tel) vs ++ teleElims tel boundary) tel t
 
 checkSpine
   :: (MonadCheckInternal m)
@@ -373,27 +373,24 @@ inferSpine' action t self self' (e : es) = do
 --   the principal argument of projection-like functions.
 shouldBeProjectible :: (MonadCheckInternal m) => Type -> QName -> m Type
 -- shouldBeProjectible t f = maybe failure return =<< projectionType t f
-shouldBeProjectible t f = ifBlocked t
-  (\m t -> patternViolation)
-  (\_ t -> maybe failure return =<< getDefType f t)
+shouldBeProjectible t f = do
+    t <- abortIfBlocked t
+    maybe failure return =<< getDefType f t
   where failure = typeError $ ShouldBeRecordType t
     -- TODO: more accurate error that makes sense also for proj.-like funs.
 
 shouldBePath :: (MonadCheckInternal m) => Type -> m (Dom Type, Abs Type)
-shouldBePath t = ifBlocked t
-  (\m t -> patternViolation)
-  (\_ t -> do
-      m <- isPath t
-      case m of
-        Just p  -> return p
-        Nothing -> typeError $ ShouldBePath t)
+shouldBePath t = do
+  t <- abortIfBlocked t
+  m <- isPath t
+  case m of
+    Just p  -> return p
+    Nothing -> typeError $ ShouldBePath t
 
 shouldBePi :: (MonadCheckInternal m) => Type -> m (Dom Type, Abs Type)
-shouldBePi t = ifBlocked t
-  (\m t -> patternViolation)
-  (\_ t -> case unEl t of
-      Pi a b -> return (a , b)
-      _      -> typeError $ ShouldBePi t)
+shouldBePi t = abortIfBlocked t >>= \ case
+  El _ (Pi a b) -> return (a, b)
+  _             -> typeError $ ShouldBePi t
 
 -- | Check if sort is well-formed.
 checkSort :: (MonadCheckInternal m) => Action m -> Sort -> m Sort
@@ -401,8 +398,10 @@ checkSort action s =
   case s of
     Type l   -> Type <$> checkLevel action l
     Prop l   -> Prop <$> checkLevel action l
-    Inf      -> return Inf
+    Inf f n  -> return $ Inf f n
+    SSet l   -> SSet <$> checkLevel action l
     SizeUniv -> return SizeUniv
+    LockUniv -> return LockUniv
     PiSort dom s2 -> do
       let El s1 a = unDom dom
       s1' <- checkSort action s1
@@ -410,6 +409,10 @@ checkSort action s =
       let dom' = dom $> El s1' a'
       s2' <- mapAbstraction dom' (checkSort action) s2
       return $ PiSort dom' s2'
+    FunSort s1 s2 -> do
+      s1' <- checkSort action s1
+      s2' <- checkSort action s2
+      return $ FunSort s1' s2'
     UnivSort s -> UnivSort <$> checkSort action s
     MetaS x es -> do -- we assume sort meta instantiations to be well-formed
       a <- metaType x
@@ -439,16 +442,11 @@ checkLevel action (Max n ls) = Max n <$> mapM checkPlusLevel ls
 
     checkLevelAtom l = do
       lvl <- levelType
-      UnreducedLevel <$> case l of
-        MetaLevel x es   -> checkInternal' action (MetaV x es) CmpLeq lvl
-        BlockedLevel _ v -> checkInternal' action v CmpLeq lvl
-        NeutralLevel _ v -> checkInternal' action v CmpLeq lvl
-        UnreducedLevel v -> checkInternal' action v CmpLeq lvl
+      checkInternal' action l CmpLeq lvl
 
 -- | Universe subsumption and type equality (subtyping for sizes, resp.).
 cmptype :: (MonadCheckInternal m) => Comparison -> Type -> Type -> m ()
 cmptype cmp t1 t2 = do
-  ifIsSort t1 (\ s1 -> (compareSort cmp s1) =<< shouldBeSort t2) $ do
     -- Andreas, 2017-03-09, issue #2493
     -- Only check subtyping, do not solve any metas!
     dontAssignMetas $ compareType cmp t1 t2

@@ -1,4 +1,10 @@
 {
+#if  __GLASGOW_HASKELL__ > 800
+{-# OPTIONS_GHC -Wno-error=deprecated-flags   #-}
+{-# OPTIONS_GHC -Wno-error=missing-signatures #-}
+{-# OPTIONS_GHC -Wno-error=tabs               #-}
+{-# OPTIONS_GHC -Wno-error=unused-imports     #-}
+#endif
 {-# OPTIONS_GHC -fno-warn-deprecated-flags   #-}
 {-# OPTIONS_GHC -fno-warn-missing-signatures #-}
 {-# OPTIONS_GHC -fno-warn-tabs               #-}
@@ -39,6 +45,7 @@ import Agda.Syntax.Literal
 
 $digit       = 0-9
 $hexdigit    = [ $digit a-f A-F ]
+$binarydigit = 0-1
 $alpha       = [ A-Z a-z _ ]
 $op          = [ \- \! \# \$ \% \& \* \+ \/ \< \= \> \^ \| \~ \? \` \[ \] \, \: ]
 $idstart     = [ $digit $alpha $op ]
@@ -48,7 +55,9 @@ $white_notab = $white # \t
 $white_nonl  = $white_notab # \n
 
 @number       = $digit+ | "0x" $hexdigit+
-@prettynumber = $digit+ ([_] $digit+)* | "0x" $hexdigit+
+@prettynumber = $digit+ ([_] $digit+)*
+              | "0x" $hexdigit+ ([_] $hexdigit+)*
+              | "0b" $binarydigit+ ([_] $binarydigit+)*
 @integer      = [\-]? @prettynumber
 @exponent     = [eE] [\-\+]? @number
 @float        = @integer \. @number @exponent? | @number @exponent
@@ -168,11 +177,7 @@ tokens :-
 <0,code> instance       { keyword KwInstance }
 <0,code> overlap        { keyword KwOverlap }
 <0,code> macro          { keyword KwMacro }
-<0,code> Set            { keyword KwSet }
-<0,code> Prop           { keyword KwProp }
 <0,code> forall         { keyword KwForall }
-<0,code> Set @number    { withInterval' (read . drop 3) TokSetN }
-<0,code> Prop @number   { withInterval' (read . drop 4) TokPropN }
 <0,code> quote          { keyword KwQuote }
 <0,code> quoteTerm      { keyword KwQuoteTerm }
 <0,code> unquote        { keyword KwUnquote }
