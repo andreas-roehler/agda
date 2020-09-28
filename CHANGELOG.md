@@ -154,6 +154,13 @@ Language
 * Binary integer literals with prefix `0b` (for instance, `0b11001001`) are now
   supported.
 
+* Overloaded literals now require the conversion function (fromNat, fromNeg, or
+  fromString) to be in scope *unqualified* to take effect.
+
+  Previously, it was enough for the function to be in scope at all, which meant
+  you couldn't import the corresponding builtin module without having overloaded
+  literals turned on.
+
 Builtins
 --------
 
@@ -293,6 +300,22 @@ Reflection
   The `execTC` builtin takes three arguments: the basename of the executable (e.g., `"echo"`), a list of arguments, and the contents of the standard input. It returns a triple, consisting of the exit code (as a natural number), the contents of the standard output, and the contents of the standard error.
 
   The builtin is only available when `--allow-exec` is passed. (Note that `--allow-exec` is incompatible with ``--safe``.) To make an executable available to Agda, add the absolute path on a new line in `~/.agda/executables`.
+
+Library management
+------------------
+
+- `.agda-lib` files can now contain an extra field `flags:` with
+  default flags for the library. Flags can be any flags that are
+  accepted as part of an `{-# OPTIONS ... #-}` pragma. For example,
+  file `my-library.agda-lib` with
+
+  ```
+  flags: --without-K
+  ```
+
+  will apply the `--without-K` flag to all Agda files in the current
+  directory and (recursive) subdirectories that do not themselves
+  contain an `.agda-lib` file.
 
 
 Emacs mode

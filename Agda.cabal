@@ -545,6 +545,7 @@ library
                     Agda.Utils.Bag
                     Agda.Utils.Benchmark
                     Agda.Utils.BiMap
+                    Agda.Utils.CallStack
                     Agda.Utils.Cluster
                     Agda.Utils.Empty
                     Agda.Utils.Environment
@@ -609,6 +610,8 @@ library
                     Agda.VersionCommit
 
   other-modules:    Paths_Agda
+                    Agda.Utils.CallStack.Base
+                    Agda.Utils.CallStack.Pretty
 
   -- NOTE: If adding flags, also add to `.ghci-8.0`
   if impl(ghc <= 8.0.2)
@@ -849,7 +852,8 @@ test-suite agda-tests
                 , array >= 0.5.1.1 && < 0.6
                 , base >= 4.9.0.0 && < 4.15
                 , bytestring >= 0.10.8.1 && < 0.11
-                , containers >= 0.5.7.1 && < 0.7
+                -- containers-0.5.11.0 is the first to contain IntSet.intersection
+                , containers >= 0.5.11.0 && < 0.7
                 , directory >= 1.2.6.2 && < 1.4
                 , filepath >= 1.4.1.0 && < 1.5
                 , filemanip >= 0.3.6.3 && < 0.4

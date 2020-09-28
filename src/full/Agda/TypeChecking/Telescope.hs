@@ -24,6 +24,7 @@ import Agda.TypeChecking.Substitute
 import Agda.TypeChecking.Free
 import Agda.TypeChecking.Warnings
 
+import Agda.Utils.CallStack ( withCallerCallStack )
 import Agda.Utils.Empty
 import Agda.Utils.Functor
 import Agda.Utils.List
@@ -66,7 +67,7 @@ unflattenTel (x : xs) (a : tel) = ExtendTel a' (Abs x tel')
   where
     tel' = unflattenTel xs tel
     a'   = applySubst rho a
-    rho  = parallelS (replicate (size tel + 1) (withFileAndLine impossibleTerm))
+    rho  = parallelS (replicate (size tel + 1) (withCallerCallStack impossibleTerm))
 unflattenTel [] (_ : _) = __IMPOSSIBLE__
 unflattenTel (_ : _) [] = __IMPOSSIBLE__
 
@@ -248,9 +249,12 @@ splitTelescopeExact is tel = guard ok $> SplitTel tel1 tel2 perm
     checkDependencies soFar []     = True
     checkDependencies soFar (j:js) = ok && checkDependencies (IntSet.insert j soFar) js
       where
-        fv' = allFreeVars $ indexWithDefault __IMPOSSIBLE__ ts0 (n-1-j)
-        fv  = fv' `IntSet.intersection` IntSet.fromAscList [ 0 .. n-1 ]
-        ok  = fv `IntSet.isSubsetOf` soFar
+        t   = indexWithDefault __IMPOSSIBLE__ ts0 (n-1-j)  -- ts0[n-1-j]
+        -- Skip the construction of intermediate @IntSet@s in the check @ok@.
+        -- ok  = (allFreeVars t `IntSet.intersection` IntSet.fromAscList [ 0 .. n-1 ])
+        --       `IntSet.isSubsetOf` soFar
+        good i = All $ (i < n) `implies` (i `IntSet.member` soFar) where implies = (<=)
+        ok = getAll $ runFree good IgnoreNot t
 
     ok    = all (<n) is && checkDependencies IntSet.empty is
 
