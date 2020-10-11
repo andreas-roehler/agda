@@ -1,5 +1,4 @@
 {-# LANGUAGE NondecreasingIndentation #-}
-{-# LANGUAGE TypeFamilies #-}
 
 {- | Various utility functions dealing with the non-linear, higher-order
      patterns used for rewrite rules.
@@ -28,6 +27,7 @@ import Agda.TypeChecking.Reduce
 import Agda.TypeChecking.Substitute
 import Agda.TypeChecking.Telescope
 
+import Agda.Utils.Either
 import Agda.Utils.Functor
 import Agda.Utils.Impossible
 import Agda.Utils.List
@@ -88,7 +88,7 @@ instance PatternFrom () Sort NLPSort where
       SSet l   -> __IMPOSSIBLE__
       SizeUniv -> return PSizeUniv
       LockUniv -> return PLockUniv
-      PiSort _ _ -> __IMPOSSIBLE__
+      PiSort _ _ _ -> __IMPOSSIBLE__
       FunSort _ _ -> __IMPOSSIBLE__
       UnivSort _ -> __IMPOSSIBLE__
       MetaS{}  -> __IMPOSSIBLE__
@@ -110,7 +110,7 @@ instance PatternFrom Type Term NLPat where
   patternFrom r0 k t v = do
     t <- reduce t
     etaRecord <- isEtaRecordType t
-    prop <- isPropM t
+    prop <- fromRight __IMPOSSIBLE__ <.> runBlocked $ isPropM t
     let r = if prop then Irrelevant else r0
     v <- unLevel =<< reduce v
     reportSDoc "rewriting.build" 60 $ sep
@@ -180,13 +180,11 @@ instance PatternFrom Type Term NLPat where
 -- | Convert from a non-linear pattern to a term.
 
 class NLPatToTerm p a where
-  nlPatToTerm
-    :: (MonadReduce m, HasBuiltins m, HasConstInfo m, MonadDebug m)
-    => p -> m a
+  nlPatToTerm :: PureTCM m => p -> m a
 
   default nlPatToTerm ::
     ( NLPatToTerm p' a', Traversable f, p ~ f p', a ~ f a'
-    , MonadReduce m, HasBuiltins m, HasConstInfo m, MonadDebug m
+    , PureTCM m
     ) => p -> m a
   nlPatToTerm = traverse nlPatToTerm
 

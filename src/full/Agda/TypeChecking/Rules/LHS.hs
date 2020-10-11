@@ -104,9 +104,9 @@ import Agda.Utils.Impossible
 -- | A pattern is flexible if it is dotted or implicit, or a record pattern
 --   with only flexible subpatterns.
 class IsFlexiblePattern a where
-  maybeFlexiblePattern :: a -> MaybeT TCM FlexibleVarKind
+  maybeFlexiblePattern :: (HasConstInfo m, MonadDebug m) => a -> MaybeT m FlexibleVarKind
 
-  isFlexiblePattern :: a -> TCM Bool
+  isFlexiblePattern :: (HasConstInfo m, MonadDebug m) => a -> m Bool
   isFlexiblePattern p =
     maybe False notOtherFlex <$> runMaybeT (maybeFlexiblePattern p)
     where
@@ -821,7 +821,7 @@ splitStrategy = filter shouldSplit
 
 -- | The loop (tail-recursive): split at a variable in the problem until problem is solved
 checkLHS
-  :: forall tcm a. (MonadTCM tcm, MonadReduce tcm, MonadAddContext tcm, MonadWriter Blocked_ tcm, HasConstInfo tcm, MonadError TCErr tcm, MonadDebug tcm, MonadReader Nat tcm, HasBuiltins tcm)
+  :: forall tcm a. (MonadTCM tcm, PureTCM tcm, MonadWriter Blocked_ tcm, MonadError TCErr tcm, MonadTrace tcm, MonadReader Nat tcm)
   => Maybe QName      -- ^ The name of the definition we are checking.
   -> LHSState a       -- ^ The current state.
   -> tcm a
@@ -1304,14 +1304,18 @@ checkLHS mf = updateModality checkLHS_ where
              TelV tel dt <- telView da'
              return $ abstract (mapCohesion updCoh <$> tel) a
 
+      let stuck errs = softTypeError $ SplitError $
+            UnificationStuck (conName c) (delta1 `abstract` gamma) cixs ixs' errs
+
       liftTCM (withKIfStrict $ unifyIndices delta1Gamma flex da' cixs ixs') >>= \case
 
         -- Mismatch.  Report and abort.
         NoUnify neg -> hardTypeError $ ImpossibleConstructor (conName c) neg
 
+        UnifyBlocked block -> stuck [] -- TODO: postpone and retry later
+
         -- Unclear situation.  Try next split.
-        DontKnow errs -> softTypeError $ SplitError $
-          UnificationStuck (conName c) (delta1 `abstract` gamma) cixs ixs' errs
+        UnifyStuck errs -> stuck errs
 
         -- Success.
         Unifies (delta1',rho0,es) -> do
@@ -1433,7 +1437,7 @@ data DataOrRecord
 --   a data/record type by instantiating a variable/metavariable, or fail hard
 --   otherwise.
 isDataOrRecordType
-  :: (MonadTCM m, MonadReduce m, MonadDebug m, ReadTCState m)
+  :: (MonadTCM m, PureTCM m)
   => Type
   -> ExceptT TCErr m (DataOrRecord, QName, Args, Args)
        -- ^ The 'Args' are parameters and indices.
@@ -1869,7 +1873,7 @@ checkParameters dc d pars = liftTCM $ do
       compareArgs [] [] t (Def d []) vs (take (length vs) pars)
     _ -> __IMPOSSIBLE__
 
-checkSortOfSplitVar :: (MonadTCM m, MonadReduce m, MonadError TCErr m, ReadTCState m, MonadDebug m,
+checkSortOfSplitVar :: (MonadTCM m, PureTCM m, MonadError TCErr m,
                         LensSort a, PrettyTCM a, LensSort ty, PrettyTCM ty)
                     => DataOrRecord -> a -> Telescope -> Maybe ty -> m ()
 checkSortOfSplitVar dr a tel mtarget = do
@@ -1879,20 +1883,18 @@ checkSortOfSplitVar dr a tel mtarget = do
       | IsRecord _ _ <- dr     -> return ()
       | Just target <- mtarget -> do
           reportSDoc "tc.sort.check" 20 $ "target:" <+> prettyTCM target
-          unlessM (isFibrant target) $ splitOnFibrantError mtarget
+          checkIsFibrant target
           forM_ (telToList tel) $ \ d -> do
             let ty = snd $ unDom d
-            unlessM (isFibrant ty) $
-              unlessM (isInterval ty) $
-                splitOnFibrantError' ty
+            checkIsFibrantOrInterval ty
       | otherwise              -> do
           reportSDoc "tc.sort.check" 20 $ "no target"
-          splitOnFibrantError mtarget
+          splitOnFibrantError Nothing
     Prop{}
       | IsRecord _ _ <- dr     -> return ()
       | Just target <- mtarget -> do
         reportSDoc "tc.sort.check" 20 $ "target prop:" <+> prettyTCM target
-        unlessM (isPropM target) splitOnPropError
+        checkIsProp target
       | otherwise              -> do
           reportSDoc "tc.sort.check" 20 $ "no target prop"
           splitOnPropError
@@ -1903,17 +1905,33 @@ checkSortOfSplitVar dr a tel mtarget = do
         [ "Cannot split on datatype in sort" , prettyTCM (getSort a) ]
 
   where
+    checkIsProp t = runBlocked (isPropM t) >>= \case
+      Left b      -> splitOnPropError -- TODO
+      Right False -> splitOnPropError
+      Right True  -> return ()
+
+    checkIsFibrantOrInterval t = runBlocked (isFibrant t) >>= \case
+      Left b      -> splitOnFibrantError' t $ Just b
+      Right False -> unlessM (isInterval t) $
+                       splitOnFibrantError' t $ Nothing
+      Right True  -> return ()
+
+    checkIsFibrant t = runBlocked (isFibrant t) >>= \case
+      Left b      -> splitOnFibrantError $ Just b
+      Right False -> splitOnFibrantError Nothing
+      Right True  -> return ()
+
     splitOnPropError = softTypeError $ GenericError
       "Cannot split on datatype in Prop unless target is in Prop"
 
-    splitOnFibrantError' t = softTypeError =<< do
-      liftTCM $ SortOfSplitVarError <$> (mplus <$> isBlocked (getSort t) <*> isBlocked t) <*> fsep
+    splitOnFibrantError' t mb = softTypeError =<< do
+      liftTCM $ SortOfSplitVarError mb <$> fsep
         [ "Cannot eliminate fibrant type" , prettyTCM a
         , "unless context type", prettyTCM t, "is also fibrant."
         ]
 
-    splitOnFibrantError tgt = softTypeError =<< do
-      liftTCM $ SortOfSplitVarError <$> (maybe (return Nothing) (isBlocked . getSort) tgt) <*> fsep
+    splitOnFibrantError mb = softTypeError =<< do
+      liftTCM $ SortOfSplitVarError mb <$> fsep
         [ "Cannot eliminate fibrant type" , prettyTCM a
         , "unless target type is also fibrant"
         ]

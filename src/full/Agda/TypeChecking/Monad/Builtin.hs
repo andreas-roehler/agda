@@ -55,6 +55,8 @@ instance HasBuiltins m => HasBuiltins (StateT s m) where
 instance (HasBuiltins m, Monoid w) => HasBuiltins (WriterT w m) where
   getBuiltinThing b = lift $ getBuiltinThing b
 
+deriving instance HasBuiltins m => HasBuiltins (BlockT m)
+
 -- If Agda is changed so that the type of a literal can belong to an
 -- inductive family (with at least one index), then the implementation
 -- of split' in Agda.TypeChecking.Coverage should be changed.
@@ -145,9 +147,11 @@ getTerm use name = flip fromMaybeM (getTerm' name) $
 
 
 -- | Rewrite a literal to constructor form if possible.
-constructorForm :: (HasBuiltins m, MonadError TCErr m, MonadTCEnv m, ReadTCState m)
-                => Term -> m Term
-constructorForm v = constructorForm' primZero primSuc v
+constructorForm :: HasBuiltins m => Term -> m Term
+constructorForm v = do
+  let pZero = fromMaybe __IMPOSSIBLE__ <$> getBuiltin' builtinZero
+      pSuc  = fromMaybe __IMPOSSIBLE__ <$> getBuiltin' builtinSuc
+  constructorForm' pZero pSuc v
 
 constructorForm' :: Applicative m => m Term -> m Term -> Term -> m Term
 constructorForm' pZero pSuc v =

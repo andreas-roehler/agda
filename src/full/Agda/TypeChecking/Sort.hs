@@ -42,6 +42,7 @@ import Agda.TypeChecking.Monad.Constraints (addConstraint, MonadConstraint)
 import Agda.TypeChecking.Monad.Context
 import Agda.TypeChecking.Monad.Debug
 import Agda.TypeChecking.Monad.MetaVars (metaType)
+import Agda.TypeChecking.Monad.Pure
 import Agda.TypeChecking.Monad.Signature (HasConstInfo(..), applyDef)
 import Agda.TypeChecking.Pretty
 import Agda.TypeChecking.ProjectionLike (elimView)
@@ -58,7 +59,7 @@ import Agda.Utils.Monad
 --   straight away, return that. Otherwise, return @UnivSort s@ and add a
 --   constraint to ensure we can compute the sort eventually.
 inferUnivSort
-  :: (MonadReduce m, MonadConstraint m, HasOptions m)
+  :: (PureTCM m, MonadConstraint m)
   => Sort -> m Sort
 inferUnivSort s = do
   s <- reduce s
@@ -84,13 +85,10 @@ hasBiggerSort = void . inferUnivSort
 -- | Infer the sort of a pi type. If we can compute the sort straight away,
 --   return that. Otherwise, return @PiSort a s2@ and add a constraint to
 --   ensure we can compute the sort eventually.
-inferPiSort
-  :: (MonadReduce m, MonadAddContext m, MonadDebug m)
-  => Dom Type -> Abs Sort -> m Sort
+inferPiSort :: PureTCM m => Dom Type -> Abs Sort -> m Sort
 inferPiSort a s2 = do
   s1' <- reduce $ getSort a
-  let a' = set lensSort s1' a
-  s2' <- mapAbstraction a' reduce s2
+  s2' <- mapAbstraction a reduce s2
   -- we do instantiateFull here to perhaps remove some (flexible)
   -- dependencies of s2 on var 0, thus allowing piSort' to reduce
   s2' <- instantiateFull s2'
@@ -104,7 +102,7 @@ inferPiSort a s2 = do
   --    addConstraint $ HasPTSRule s1 s2
   --    return $ PiSort s1 s2
 
-  return $ piSort a' s2'
+  return $ piSort (unEl <$> a) s1' s2'
 
 -- | As @inferPiSort@, but for a nondependent function type.
 inferFunSort :: Sort -> Sort -> TCM Sort
@@ -140,7 +138,7 @@ checkTelePiSort :: Type -> TCM ()
 --  underAbstraction a b checkTelePiSort
 checkTelePiSort _ = return ()
 
-ifIsSort :: (MonadReduce m, MonadError TCErr m) => Type -> (Sort -> m a) -> m a -> m a
+ifIsSort :: (MonadReduce m, MonadBlock m) => Type -> (Sort -> m a) -> m a -> m a
 ifIsSort t yes no = do
   -- Jesper, 2020-09-06, subtle: do not use @abortIfBlocked@ here
   -- since we want to take the yes branch whenever the type is a sort,
@@ -151,20 +149,20 @@ ifIsSort t yes no = do
     _      | Blocked m _ <- bt -> patternViolation m
            | otherwise         -> no
 
-ifNotSort :: (MonadReduce m, MonadError TCErr m) => Type -> m a -> (Sort -> m a) -> m a
+ifNotSort :: (MonadReduce m, MonadBlock m) => Type -> m a -> (Sort -> m a) -> m a
 ifNotSort t = flip $ ifIsSort t
 
 -- | Result is in reduced form.
 shouldBeSort
-  :: (MonadReduce m, MonadTCEnv m, ReadTCState m, MonadError TCErr m)
+  :: (PureTCM m, MonadBlock m, MonadError TCErr m)
   => Type -> m Sort
 shouldBeSort t = ifIsSort t return (typeError $ ShouldBeASort t)
 
--- | Reconstruct the sort of a type.
+-- | Reconstruct the sort of a term.
 --
 --   Precondition: given term is a well-sorted type.
 sortOf
-  :: forall m. (MonadReduce m, MonadError TCErr m, MonadTCEnv m, MonadAddContext m, HasBuiltins m, HasConstInfo m)
+  :: forall m. (PureTCM m, MonadBlock m)
   => Term -> m Sort
 sortOf t = do
   reportSDoc "tc.sort" 40 $ "sortOf" <+> prettyTCM t
@@ -177,7 +175,7 @@ sortOf t = do
         let a = unEl $ unDom adom
         sa <- sortOf a
         sb <- mapAbstraction adom (sortOf . unEl) b
-        return $ piSort (adom $> El sa a) sb
+        return $ piSort (unEl <$> adom) sa sb
       Sort s     -> return $ univSort s
       Var i es   -> do
         a <- typeOfBV i
@@ -219,3 +217,9 @@ sortOf t = do
       IApply x y r -> do
         (b , c) <- fromMaybe __IMPOSSIBLE__ <$> isPath a
         sortOfE (c `absApp` r) (hd . (e:)) es
+
+-- | Reconstruct the minimal sort of a type (ignoring the sort annotation).
+sortOfType
+  :: forall m. (PureTCM m, MonadBlock m)
+  => Type -> m Sort
+sortOfType = sortOf . unEl

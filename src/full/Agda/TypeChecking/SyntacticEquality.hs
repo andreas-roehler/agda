@@ -115,7 +115,7 @@ instance SynEq Sort where
     (s, s') <- lift $ instantiate' (s, s')
     case (s, s') of
       (Type l  , Type l'   ) -> Type <$$> synEq l l'
-      (PiSort a b, PiSort a' b') -> piSort <$$> synEq a a' <**> synEq' b b'
+      (PiSort a b c, PiSort a' b' c') -> piSort <$$> synEq a a' <**> synEq' b b' <**> synEq' c c'
       (FunSort a b, FunSort a' b') -> funSort <$$> synEq a a' <**> synEq' b b'
       (UnivSort a, UnivSort a') -> UnivSort <$$> synEq a a'
       (SizeUniv, SizeUniv  ) -> pure2 s
@@ -136,6 +136,9 @@ instance SynEq a => SynEq [a] where
   synEq as as'
     | length as == length as' = unzip <$> zipWithM synEq' as as'
     | otherwise               = inequal (as, as')
+
+instance (SynEq a, SynEq b) => SynEq (a,b) where
+  synEq (a,b) (a',b') = (,) <$$> synEq a a' <**> synEq b b'
 
 instance SynEq a => SynEq (Elim' a) where
   synEq e e' =

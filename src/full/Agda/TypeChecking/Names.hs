@@ -1,4 +1,3 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 
 {-| EDSL to construct terms without touching De Bruijn indices.
 
@@ -58,6 +57,8 @@ newtype NamesT m a = NamesT { unName :: ReaderT Names m a }
            , MonadReduce
            , MonadError e
            , MonadAddContext
+           , HasConstInfo
+           , PureTCM
            )
 
 -- deriving instance MonadState s m => MonadState s (NamesT m)

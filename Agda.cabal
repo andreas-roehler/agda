@@ -39,7 +39,7 @@ tested-with:        GHC == 8.0.2
                     GHC == 8.4.4
                     GHC == 8.6.5
                     GHC == 8.8.4
-                    GHC == 8.10.1
+                    GHC == 8.10.2
 
 extra-source-files: CHANGELOG.md
                     README.md
@@ -468,6 +468,7 @@ library
                     Agda.TypeChecking.Monad.Mutual
                     Agda.TypeChecking.Monad.Open
                     Agda.TypeChecking.Monad.Options
+                    Agda.TypeChecking.Monad.Pure
                     Agda.TypeChecking.Monad.Signature
                     Agda.TypeChecking.Monad.SizedTypes
                     Agda.TypeChecking.Monad.State
@@ -722,6 +723,7 @@ library
                     , FlexibleContexts
                     , FlexibleInstances
                     , FunctionalDependencies
+                    , GeneralizedNewtypeDeriving
                     , InstanceSigs
                     , LambdaCase
                     , MultiParamTypeClasses
@@ -734,6 +736,7 @@ library
                     , ScopedTypeVariables
                     , StandaloneDeriving
                     , TupleSections
+                    , TypeFamilies
                     , TypeSynonymInstances
 
 executable agda
@@ -913,6 +916,7 @@ test-suite agda-tests
                      , FlexibleContexts
                      , FlexibleInstances
                      , FunctionalDependencies
+                     , GeneralizedNewtypeDeriving
                      , InstanceSigs
                      , LambdaCase
                      , MultiParamTypeClasses
@@ -925,6 +929,7 @@ test-suite agda-tests
                      , ScopedTypeVariables
                      , StandaloneDeriving
                      , TupleSections
+                     , TypeFamilies
                      , TypeSynonymInstances
 
   -- NOTE: If adding or removing flags, also change `.ghci-8.0`

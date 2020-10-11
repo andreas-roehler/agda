@@ -1,4 +1,5 @@
 {-# LANGUAGE NondecreasingIndentation #-}
+{-# LANGUAGE NoMonoLocalBinds #-}  -- counteract MonoLocalBinds implied by TypeFamilies
 
 module Agda.TypeChecking.Rules.Term where
 
@@ -116,7 +117,7 @@ isType_ e = traceCall (IsType_ e) $ do
       b <- isType_ b
       s <- inferFunSort (getSort a) (getSort b)
       let t' = El s $ Pi a $ NoAbs underscore b
-      noFunctionsIntoSize b t'
+      --noFunctionsIntoSize t'
       return t'
     A.Pi _ tel e -> do
       (t0, t') <- checkPiTelescope (List1.toList tel) $ \ tel -> do
@@ -124,12 +125,12 @@ isType_ e = traceCall (IsType_ e) $ do
         tel <- instantiateFull tel
         return (t0, telePi tel t0)
       checkTelePiSort t'
-      noFunctionsIntoSize t0 t'
+      --noFunctionsIntoSize t'
       return t'
 
     A.Generalized s e -> do
       (_, t') <- generalizeType s $ isType_ e
-      noFunctionsIntoSize t' t'
+      --noFunctionsIntoSize t'
       return t'
 
     -- Setᵢ
@@ -242,6 +243,9 @@ checkLevel arg = do
 --   we are in the context of @tBlame@ in order to print it correctly.
 --   Not being in context of @t@ should not matter, as we are only
 --   checking whether its sort reduces to 'SizeUniv'.
+--
+--   Currently UNUSED since SizeUniv is turned off (as of 2016).
+{-
 noFunctionsIntoSize :: Type -> Type -> TCM ()
 noFunctionsIntoSize t tBlame = do
   reportSDoc "tc.fun" 20 $ do
@@ -257,6 +261,7 @@ noFunctionsIntoSize t tBlame = do
     -- We have constructed a function type in SizeUniv
     -- which is illegal to prevent issue 1428.
     typeError $ FunctionTypeInSizeUniv $ unEl tBlame
+-}
 
 -- | Check that an expression is a type which is equal to a given type.
 isTypeEqualTo :: A.Expr -> Type -> TCM Type
@@ -798,7 +803,7 @@ checkExtendedLambda cmp i di qname cs e t = localTC (set eQuantity topQuantity) 
 --
 --   * If successful, that's it, we are done.
 --
---   * If @IlltypedPattern p a@, @NotADatatype a@ or @CannotEliminateWithPattern p a@
+--   * If @NotADatatype a@ or @CannotEliminateWithPattern p a@
 --     is thrown and type @a@ is blocked on some meta @x@,
 --     reset any changes to the state and pass (the error and) @x@ to the handler.
 --
@@ -829,8 +834,6 @@ catchIlltypedPatternBlockedOnMeta m handle = do
         TypeError _ s cl -> localTCState $ do
           putTC s
           enterClosure cl $ \case
-            IlltypedPattern p a -> isBlocked a
-
             SortOfSplitVarError m _ -> return m
 
             SplitError (UnificationStuck c tel us vs _) -> do
@@ -1142,11 +1145,11 @@ checkExpr' cmp e t =
 
     e <- scopedExpr e
 
-    irrelevantIfProp <- isPropM t >>= \case
-      True  -> do
+    irrelevantIfProp <- (runBlocked $ isPropM t) >>= \case
+      Right True  -> do
         let mod = defaultModality { modRelevance = Irrelevant }
         return $ fmap dontCare . applyModalityToContext mod
-      False -> return id
+      _ -> return id
 
     irrelevantIfProp $ tryInsertHiddenLambda e tReduced $ case e of
 
@@ -1191,14 +1194,14 @@ checkExpr' cmp e t =
                     tel <- instantiateFull tel
                     return (t0, telePi tel t0)
             checkTelePiSort t'
-            noFunctionsIntoSize t0 t'
+            --noFunctionsIntoSize t0 t'
             let s = getSort t'
                 v = unEl t'
             coerce cmp v (sort s) t
 
         A.Generalized s e -> do
             (_, t') <- generalizeType s $ isType_ e
-            noFunctionsIntoSize t' t'
+            --noFunctionsIntoSize t' t'
             let s = getSort t'
                 v = unEl t'
             coerce cmp v (sort s) t
@@ -1209,7 +1212,7 @@ checkExpr' cmp e t =
             b' <- isType_ b
             s  <- inferFunSort (getSort a') (getSort b')
             let v = Pi adom (NoAbs underscore b')
-            noFunctionsIntoSize b' $ El s v
+            --noFunctionsIntoSize b' $ El s v
             coerce cmp v (sort s) t
 
         A.Rec _ fs  -> checkRecordExpression cmp fs e t
